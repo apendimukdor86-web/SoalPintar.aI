@@ -1,0 +1,6 @@
+{
+  "name": "Soalpintar.ai - AI Generator Soal Cerdas & CBT Anti-Curang",
+  "description": "Platform AI generator soal otomatis, integrasi Google Forms & Apps Script, bank soal guru, token akses kuis, pemantauan ujian real-time, dan portal secure exam anti-curang.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
