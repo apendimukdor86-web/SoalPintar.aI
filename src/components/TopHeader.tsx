@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu, Moon, Sun, QrCode, ShieldCheck, Copy, Check } from 'lucide-react';
+import { Menu, Moon, Sun, QrCode, ShieldCheck, Copy, Check, LogOut } from 'lucide-react';
 
 interface TopHeaderProps {
   onToggleMobileMenu: () => void;
@@ -8,6 +8,7 @@ interface TopHeaderProps {
   onToggleTheme: () => void;
   onOpenProjector: () => void;
   onOpenStudentMode: () => void;
+  onLogout: () => void;
   tokenCode: string;
 }
 
@@ -15,12 +16,15 @@ const tabTitles: Record<string, { category: string; title: string }> = {
   dashboard: { category: 'Utama', title: 'Dashboard Ringkasan' },
   generator: { category: 'Pembuatan Soal', title: '1. AI Generator Soal Cerdas' },
   bank: { category: 'Pembuatan Soal', title: '2. Bank Soal Guru Terpusat' },
-  token: { category: 'Distribusi & Akses', title: '3. Token Siswa & Manajemen Akses' },
-  distribusi: { category: 'Distribusi & Akses', title: '4. Distribusi Google Form' },
-  monitoring: { category: 'Pelaksanaan Ujian', title: '5. Ujian Live (Pemantauan Real-Time)' },
+  google_forms: { category: 'Pembuatan Soal', title: '3. Google Forms (Daftar & Form Manual)' },
+  token: { category: 'Distribusi & Akses', title: '4. Token Siswa & Manajemen Akses' },
+  distribusi: { category: 'Distribusi & Akses', title: '5. Distribusi Google Form' },
+  monitoring: { category: 'Pelaksanaan Ujian', title: '6. Ujian Live (Pemantauan Real-Time)' },
   rekap: { category: 'Evaluasi & Analisis', title: '7. Rekap & Analisis Nilai Siswa' },
   pelanggaran: { category: 'Evaluasi & Analisis', title: '8. Riwayat Pelanggaran (Bukti Kejujuran)' },
-  settings_gas: { category: 'Pengaturan & Aplikasi', title: 'Pengaturan Web App Google Apps Script (Code.gs v3.2)' },
+  teacher_users: { category: 'Pengaturan & Aplikasi', title: 'Pengguna Guru (Daftar & Manajemen Akun)' },
+  settings_gas: { category: 'Pengaturan & Aplikasi', title: 'Pengaturan Web App Google Apps Script (Code.gs v3.3)' },
+  clear_data: { category: 'Pengaturan & Aplikasi', title: 'Clear Data, Log & Histori' },
   download: { category: 'Pengaturan & Aplikasi', title: '9. Download Aplikasi Guru & Siswa' },
   paket: { category: 'Pengaturan & Aplikasi', title: '10. Status Paket & Langganan' },
 };
@@ -32,6 +36,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onToggleTheme,
   onOpenProjector,
   onOpenStudentMode,
+  onLogout,
   tokenCode,
 }) => {
   const currentInfo = tabTitles[activeTab] || { category: 'Dashboard', title: 'Menu Evaluasi' };
@@ -108,7 +113,17 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           className="px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer shadow-xs"
         >
           <ShieldCheck className="w-3.5 h-3.5" />
-          <span>Portal Siswa</span>
+          <span className="hidden sm:inline">Portal Siswa</span>
+        </button>
+
+        {/* Logout CTA */}
+        <button
+          onClick={onLogout}
+          className="px-3 py-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-950/70 border border-rose-200 dark:border-rose-800/60 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer"
+          title="Keluar / Logout Guru"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span className="hidden md:inline">Logout</span>
         </button>
       </div>
     </header>

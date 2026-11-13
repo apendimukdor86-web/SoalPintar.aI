@@ -33,8 +33,10 @@ export const EXACT_CODE_GS = `/**
  *
  * SELESAI! Form akan dibuat di Google Drive Anda.
  *
- * VERSI 3.2: fitur "Nilai Siswa" (respons, skor, jawaban per soal) & acak soal.
- *   Respons diambil per halaman (maks. 500) & bisa hanya yang baru, aman untuk ribuan respons.
+ * VERSI 3.3: 
+ * - Pembersihan otomatis awalan "undefined.", tanda titik berlebih, & nomor soal (cleanQuestionTitle & cleanExistingFormTitles).
+ * - Fitur "Nilai Siswa" (respons, skor, jawaban per soal) & acak soal.
+ * - Respons diambil per halaman (maks. 500) & bisa hanya yang baru, aman untuk ribuan respons.
  * OPSIONAL - acak urutan PILIHAN JAWABAN: di editor Apps Script klik "Services" (+)
  *   > pilih "Google Forms API" > Add. Tanpa ini, yang diacak hanya urutan soal.
  * Jika memperbarui dari versi lama: paste ulang kode ini, lalu
@@ -42,6 +44,37 @@ export const EXACT_CODE_GS = `/**
  * URL Web App tetap sama, jadi tidak perlu mengubah Settings di dashboard.
  * Saat diminta izin, izinkan akses Google Forms & Drive.
  */
+
+var SCRIPT_VERSION = '3.3';
+
+/**
+ * Membersihkan awalan "undefined.", tanda titik/simbol berlebih,
+ * serta nomor urut soal (misal: "1. ", "1) ", "No. 1: ").
+ */
+function cleanQuestionTitle(str) {
+  return String(str || '')
+    .replace(/^[\\s\\u00A0]*(?:undefined\\s*\\.?\\s*|\\.+\\s+|(?:no\\.?\\s*)?\\d+\\s*[\\.\\)\\-:]\\s*)+/i, '')
+    .trim();
+}
+
+/**
+ * Membersihkan judul pertanyaan pada Google Form yang sudah ada di Google Drive.
+ */
+function cleanExistingFormTitles(form) {
+  var items = form.getItems();
+  var T = FormApp.ItemType;
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var tp = it.getType();
+    if (tp === T.MULTIPLE_CHOICE || tp === T.PARAGRAPH_TEXT || tp === T.CHECKBOX || tp === T.LIST) {
+      var curTitle = it.getTitle() || '';
+      var cleaned = cleanQuestionTitle(curTitle);
+      if (cleaned && cleaned !== curTitle) {
+        it.setTitle(cleaned);
+      }
+    }
+  }
+}
 
 function doPost(e) {
   try {
@@ -69,14 +102,17 @@ function doPost(e) {
         var file = files.next();
         try {
           var existingForm = FormApp.openById(file.getId());
-          return ContentService.createTextOutput(JSON.stringify({
+          cleanExistingFormTitles(existingForm);
+          return jsonOut({
             status: 'success',
+            version: SCRIPT_VERSION,
+            script_version: SCRIPT_VERSION,
             form_url: existingForm.getPublishedUrl(),
             edit_url: existingForm.getEditUrl(),
             form_id: existingForm.getId(),
             folder: folderName,
             is_existing: true
-          })).setMimeType(ContentService.MimeType.JSON);
+          });
         } catch (err) {
           // Abaikan jika error saat membuka
         }
@@ -137,14 +173,17 @@ function doPost(e) {
         pts = pointsPerQuestion + 1;
       }
 
+      // Normalisasi payload: pastikan q.number tidak pernah menghasilkan "undefined."
+      var cleanTitle = cleanQuestionTitle(q.question);
+
       if (q.type === 'essay') {
         var item = form.addParagraphTextItem();
-        item.setTitle(q.number + '. ' + q.question);
+        item.setTitle(cleanTitle);
         item.setRequired(true);
         item.setPoints(pts);
       } else {
         var item = form.addMultipleChoiceItem();
-        item.setTitle(q.number + '. ' + q.question);
+        item.setTitle(cleanTitle);
         item.setRequired(true);
         item.setPoints(pts);
         
@@ -169,8 +208,10 @@ function doPost(e) {
     guruFolder.addFile(formFile);
     DriveApp.getRootFolder().removeFile(formFile);
     
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonOut({
       status: 'success',
+      version: SCRIPT_VERSION,
+      script_version: SCRIPT_VERSION,
       form_url: form.getPublishedUrl(),
       edit_url: form.getEditUrl(),
       form_id: form.getId(),
@@ -179,26 +220,29 @@ function doPost(e) {
       points_per_question: pointsPerQuestion,
       shuffle_questions: shuffleInfo.questions,
       shuffle_options: shuffleInfo.options
-    })).setMimeType(ContentService.MimeType.JSON);
+    });
     
   } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonOut({
       status: 'error',
+      version: SCRIPT_VERSION,
       message: error.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
+    });
   }
 }
 
 /**
- * doGet: aksi BACA saja (tidak pernah membuat / mengubah form).
- *   ?action=version                         -> versi script
+ * doGet: aksi BACA & PEMELIHARAAN.
+ *   ?action=version                                       -> versi script
  *   ?action=responses&form_id=ID[&since=ms][&offset=0&limit=500] -> respons + nilai (per halaman)
- *   ?action=find_form&published_id=PID      -> cari ID form (edit) dari ID link publik
- *   ?action=set_shuffle&form_id=ID&questions=1&options=1 -> atur acak soal / pilihan
+ *   ?action=find_form&published_id=PID                    -> cari ID form (edit) dari ID link publik
+ *   ?action=set_shuffle&form_id=ID&questions=1&options=1  -> atur acak soal / pilihan
+ *   ?action=clean_titles&form_id=ID                       -> bersihkan judul soal pada form lama
  */
 function doGet(e) {
   var p = (e && e.parameter) || {};
   try {
+    if (p.action === 'version') return jsonOut({ status: 'ok', version: SCRIPT_VERSION, script_version: SCRIPT_VERSION });
     if (p.action === 'responses') return jsonOut(getFormResponses(p.form_id, p.since, p.offset, p.limit));
     if (p.action === 'find_form') return jsonOut(findFormByPublishedId(p.published_id));
     if (p.action === 'set_shuffle') {
@@ -206,14 +250,17 @@ function doGet(e) {
       var info = applyShuffle(target, p.questions === '1', p.options === '1');
       return jsonOut({ status: 'success', version: SCRIPT_VERSION, shuffle_questions: info.questions, shuffle_options: info.options, options_message: info.message });
     }
+    if (p.action === 'clean_titles' && p.form_id) {
+      var formToClean = FormApp.openById(p.form_id);
+      cleanExistingFormTitles(formToClean);
+      return jsonOut({ status: 'success', version: SCRIPT_VERSION, form_id: p.form_id, message: 'Judul soal berhasil dibersihkan.' });
+    }
 
-    return jsonOut({ status: 'ok', message: 'soalpintar.ai Form Creator is running!', version: SCRIPT_VERSION });
+    return jsonOut({ status: 'ok', message: 'soalpintar.ai Form Creator is running!', version: SCRIPT_VERSION, script_version: SCRIPT_VERSION });
   } catch (error) {
     return jsonOut({ status: 'error', message: error.toString(), version: SCRIPT_VERSION });
   }
 }
-
-var SCRIPT_VERSION = '3.2';
 
 function jsonOut(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -257,7 +304,6 @@ function getFormResponses(formId, sinceMs, offsetParam, limitParam) {
   }
 
   var responses = sinceMs ? form.getResponses(new Date(Number(sinceMs))) : form.getResponses();
-  // Per halaman agar tidak melewati batas waktu Apps Script / web untuk ribuan respons
   var total = responses.length;
   var offset = Math.max(0, parseInt(offsetParam, 10) || 0);
   var limit = Math.min(1000, Math.max(1, parseInt(limitParam, 10) || 500));
@@ -514,7 +560,7 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           webAppUrl: urlInput.trim(),
-          title: 'Tes Kuis Soalpintar.ai Bridge v3.2',
+          title: 'Tes Kuis Soalpintar.ai Bridge v3.3',
           quiz_id: 'demo-' + Date.now().toString().slice(-5),
           guru_name: nameInput.trim() || 'Guru',
           folder_name: nameInput.trim() || 'Guru',
@@ -522,21 +568,18 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
           shuffle_options: shuffleO,
           questions: [
             {
-              number: 1,
               type: 'choice',
               question: 'Planet apakah yang memiliki julukan Planet Merah dalam tata surya kita?',
               options: ['Merkurius', 'Venus', 'Mars', 'Jupiter'],
               answer: 2, // Mars (index 2)
             },
             {
-              number: 2,
               type: 'choice',
               question: 'Organel sel yang berfungsi sebagai tempat terjadinya respirasi seluler adalah...',
               options: ['Mitokondria', 'Ribosom', 'Kloroplas', 'Badan Golgi'],
               answer: 0, // Mitokondria
             },
             {
-              number: 3,
               type: 'essay',
               question: 'Jelaskan perbedaan mendasar antara sel tumbuhan dan sel hewan beserta fungsinya!',
               options: [],
@@ -609,7 +652,7 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
                 <FileCode className="w-4 h-4 text-emerald-600" />
                 <span>Konfigurasi URL Web App</span>
               </div>
-              <span className="text-[11px] font-mono text-slate-400">Versi 3.2</span>
+              <span className="text-[11px] font-mono text-slate-400">Versi 3.3</span>
             </div>
 
             <div className="space-y-4">
@@ -842,7 +885,7 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div>
                 <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                  Kode Script Lengkap: Code.gs (Versi 3.2)
+                  Kode Script Lengkap: Code.gs (Versi 3.3 - Tanpa Nomor Soal)
                 </span>
                 <p className="text-[11px] text-slate-400">
                   Mendukung pembuatan formulir kuis, kunci jawaban, 100 poin otomatis, acak soal, dan penarikan nilai siswa.

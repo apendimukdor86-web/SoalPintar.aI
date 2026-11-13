@@ -31,6 +31,10 @@ export interface QuestionPackage {
   googleFormEditUrl?: string;
   driveFolderUrl?: string;
   formId?: string;
+  status?: string;
+  batchCode?: string;
+  timeAgo?: string;
+  optionCount?: number;
 }
 
 export interface ExamTokenConfig {
@@ -83,6 +87,8 @@ export interface StudentExamSession {
   totalScore?: number;
   warningMessage?: string | null;
   currentQuestionIndex?: number;
+  deviceId?: string;
+  deviceType?: string;
 }
 
 export interface StudentScoreRecord {
@@ -98,3 +104,17 @@ export interface StudentScoreRecord {
   submittedAt: string;
   violations: number;
 }
+
+export interface TeacherAccount {
+  id: string;
+  name: string;
+  email: string;
+  password: string;
+  subject?: string;
+  school?: string;
+  role: 'Guru Mapel' | 'Admin Sekolah' | 'Pengawas';
+  status: 'Aktif' | 'Nonaktif';
+  createdAt: string;
+  source?: 'portal_daftar' | 'pengaturan';
+}
+

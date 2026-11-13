@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
@@ -7,7 +7,7 @@ import path from 'path';
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -43,6 +43,17 @@ export interface StudentParticipant {
   totalScore?: number;
   warningMessage?: string | null;
   currentQuestionIndex?: number;
+  deviceId?: string;
+  deviceType?: string;
+}
+
+export interface ExamDeviceLockRecord {
+  token: string;
+  googleFormUrl?: string;
+  deviceId: string;
+  nisn: string;
+  studentName: string;
+  completedAt: number;
 }
 
 export interface LiveExamRoom {
@@ -62,20 +73,107 @@ export interface LiveExamRoom {
   driveFolderUrl?: string;
   createdAt: number;
   participants: Record<string, StudentParticipant>;
+  completedLocks?: ExamDeviceLockRecord[];
+  unlockedLocks?: Array<{ deviceId?: string; nisn?: string; unlockedAt: number }>;
   lastBroadcastAlert?: string | null;
 }
 
-// Seed initial rooms for instant testing
+const completedFormLocks: ExamDeviceLockRecord[] = [];
+
+function normalizeFormLinkKey(rawUrl?: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  try {
+    const u = new URL(rawUrl.trim());
+    return `${u.hostname}${u.pathname.replace(/\/+$/, '')}`.toLowerCase();
+  } catch {
+    return rawUrl.trim().toLowerCase();
+  }
+}
+
+function findMatchingDeviceLock(
+  token: string,
+  room: LiveExamRoom | undefined,
+  deviceId?: string,
+  nisn?: string,
+  googleFormUrl?: string
+): ExamDeviceLockRecord | null {
+  const cleanDevice = String(deviceId || '').trim().toLowerCase();
+  const cleanNisn = String(nisn || '').trim().toLowerCase();
+  const cleanForm = normalizeFormLinkKey(googleFormUrl || room?.googleFormUrl);
+
+  if (!cleanDevice && !cleanNisn) return null;
+
+  // 1. Check room completedLocks
+  if (room?.completedLocks) {
+    for (const lock of room.completedLocks) {
+      const sameDevice = Boolean(cleanDevice && lock.deviceId.toLowerCase() === cleanDevice);
+      const sameNisn = Boolean(cleanNisn && cleanNisn !== '-' && lock.nisn.trim().toLowerCase() === cleanNisn);
+      if (sameDevice || sameNisn) return lock;
+    }
+  }
+
+  // 2. Check participants marked selesai in the room
+  if (room?.participants) {
+    for (const p of Object.values(room.participants)) {
+      if (p.status !== 'selesai') continue;
+      const sameDevice = Boolean(cleanDevice && p.deviceId && p.deviceId.toLowerCase() === cleanDevice);
+      const sameNisn = Boolean(cleanNisn && cleanNisn !== '-' && p.nisn.trim().toLowerCase() === cleanNisn);
+      if (sameDevice || sameNisn) {
+        return {
+          token,
+          googleFormUrl: room.googleFormUrl,
+          deviceId: p.deviceId || cleanDevice,
+          nisn: p.nisn,
+          studentName: p.name,
+          completedAt: p.lastPing,
+        };
+      }
+    }
+  }
+
+  // 3. Check global Google Form link locks (same link repeated even with another token)
+  if (cleanForm) {
+    for (const lock of completedFormLocks) {
+      const lockForm = normalizeFormLinkKey(lock.googleFormUrl);
+      if (!lockForm || lockForm !== cleanForm) continue;
+      const sameDevice = Boolean(cleanDevice && lock.deviceId.toLowerCase() === cleanDevice);
+      const sameNisn = Boolean(cleanNisn && cleanNisn !== '-' && lock.nisn.trim().toLowerCase() === cleanNisn);
+      if (sameDevice || sameNisn) return lock;
+    }
+  }
+
+  return null;
+}
+
+// Seed initial rooms for instant testing (matching screenshot)
 const rooms: Record<string, LiveExamRoom> = {
+  'LCXEIYU': {
+    token: 'LCXEIYU',
+    quizId: 'quiz-segitiga-smp',
+    title: 'Segitiga',
+    subject: 'Segitiga',
+    grade: 'SMP',
+    totalQuestions: 10,
+    durationMinutes: 0,
+    remainingSeconds: 0,
+    maxViolations: 3,
+    waitingRoomEnabled: false,
+    isExamStarted: true,
+    googleFormUrl: '',
+    googleFormEditUrl: '',
+    driveFolderUrl: 'https://drive.google.com/drive/my-drive',
+    createdAt: Date.now() - 1000 * 60 * 30,
+    participants: {},
+  },
   'ZJT0P4M': {
     token: 'ZJT0P4M',
-    quizId: 'quiz-mat-smp-7',
-    title: 'Asesmen Sumatif Akhir: Matematika Aljabar & Bilangan Bulat',
-    subject: 'Matematika',
-    grade: 'Kelas VII SMP',
-    totalQuestions: 15,
-    durationMinutes: 90,
-    remainingSeconds: 82 * 60,
+    quizId: 'quiz-ipa-ulangan',
+    title: 'Ulangan',
+    subject: 'IPA',
+    grade: 'SMP',
+    totalQuestions: 10,
+    durationMinutes: 0,
+    remainingSeconds: 0,
     maxViolations: 3,
     waitingRoomEnabled: false,
     isExamStarted: true,
@@ -470,7 +568,7 @@ function buatKuisOtomatisSoalpintar() {
 
   for (var i = 0; i < qList.length; i++) {
     var q = qList[i];
-    var fullPrompt = "No. " + q.number + " (" + q.cognitiveLevel + " - " + q.points + " Poin)\\n\\n";
+    var fullPrompt = "";
     if (q.stimulus && q.stimulus.trim() !== "") {
       fullPrompt += q.stimulus + "\\n\\n";
     }
@@ -577,12 +675,18 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
       });
     }
 
+    const sanitizedQuestions = (Array.isArray(questions) ? questions : []).map((q: any) => ({
+      ...q,
+      number: q?.number !== undefined && q?.number !== null ? q.number : '',
+      question: String(q?.question || '').replace(/^\s*(?:undefined\.?\s*|\.\s+|(?:No\.?\s*)?\d+\s*[.)]\s*)+/i, '').trim(),
+    }));
+
     const payload = {
       title,
       quiz_id,
       guru_name,
       folder_name: folder_name || guru_name,
-      questions,
+      questions: sanitizedQuestions,
       shuffle_questions: Boolean(shuffle_questions),
       shuffle_options: Boolean(shuffle_options),
     };
@@ -613,6 +717,7 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
       edit_url: data.edit_url,
       form_id: data.form_id,
       folder: data.folder,
+      needsScriptUpdate: data.script_version !== '3.3',
     });
   } catch (err: any) {
     console.error('GAS create form error:', err);
@@ -665,6 +770,34 @@ app.get('/api/rooms/:token', (req: Request, res: Response) => {
   return res.json({ success: true, room });
 });
 
+// API 3b: Check if Device ID / Identity is already locked for this exam token or Google Form link
+app.get('/api/rooms/:token/check-device', (req: Request, res: Response) => {
+  const token = req.params.token.toUpperCase();
+  const room = rooms[token];
+  const deviceId = String(req.query.deviceId || '').trim().toLowerCase();
+  const nisn = String(req.query.nisn || '').trim().toLowerCase();
+  const googleFormUrl = String(req.query.googleFormUrl || '').trim();
+  const localCompletedAt = Number(req.query.localCompletedAt || 0);
+
+  const lock = findMatchingDeviceLock(token, room, deviceId, nisn, googleFormUrl);
+
+  let unlockedByTeacher = false;
+  if (!lock && room?.unlockedLocks && localCompletedAt > 0) {
+    unlockedByTeacher = room.unlockedLocks.some((u) => {
+      const matchDev = Boolean(deviceId && u.deviceId && u.deviceId.toLowerCase() === deviceId);
+      const matchNisn = Boolean(nisn && nisn !== '-' && u.nisn && u.nisn.toLowerCase() === nisn);
+      return (matchDev || matchNisn) && u.unlockedAt > localCompletedAt;
+    });
+  }
+
+  return res.json({
+    success: true,
+    locked: Boolean(lock),
+    unlockedByTeacher,
+    lockInfo: lock,
+  });
+});
+
 // API 4: Create or Update Exam Room
 app.post('/api/rooms', (req: Request, res: Response) => {
   try {
@@ -673,9 +806,11 @@ app.post('/api/rooms', (req: Request, res: Response) => {
       title,
       subject,
       grade,
+      totalQuestions = 15,
       durationMinutes = 90,
       maxViolations = 3,
       waitingRoomEnabled = false,
+      isExamStarted,
       googleFormUrl,
       googleFormEditUrl,
       driveFolderUrl,
@@ -685,21 +820,22 @@ app.post('/api/rooms', (req: Request, res: Response) => {
 
     rooms[normalizedToken] = {
       token: normalizedToken,
-      quizId: 'quiz-' + Date.now(),
+      quizId: rooms[normalizedToken]?.quizId || 'quiz-' + Date.now(),
       title: title || 'Asesmen Ujian Berbasis Komputer',
       subject: subject || 'Umum',
       grade: grade || 'Kelas VII',
-      totalQuestions: 15,
+      totalQuestions: Number(totalQuestions) || 15,
       durationMinutes: Number(durationMinutes),
       remainingSeconds: Number(durationMinutes) * 60,
       maxViolations: Number(maxViolations),
       waitingRoomEnabled: Boolean(waitingRoomEnabled),
-      isExamStarted: true,
-      googleFormUrl: googleFormUrl || 'https://docs.google.com/forms/d/e/1FAIpQLSc-contoh-kuis-matematika-smp-soalpintar/viewform',
+      isExamStarted:
+        isExamStarted !== undefined ? Boolean(isExamStarted) : !Boolean(waitingRoomEnabled),
+      googleFormUrl: googleFormUrl || '',
       googleFormEditUrl: googleFormEditUrl || '',
       driveFolderUrl: driveFolderUrl || 'https://drive.google.com/drive/folders/v2-soalpintar-ai',
-      createdAt: Date.now(),
-      participants: {},
+      createdAt: rooms[normalizedToken]?.createdAt || Date.now(),
+      participants: rooms[normalizedToken]?.participants || {},
     };
 
     return res.json({ success: true, room: rooms[normalizedToken] });
@@ -726,7 +862,24 @@ app.post('/api/rooms/:token/student-sync', (req: Request, res: Response) => {
     score,
     totalScore,
     currentQuestionIndex,
+    deviceId,
+    deviceType,
+    googleFormUrl,
+    bypassDeviceLock,
   } = req.body;
+
+  if (!bypassDeviceLock && status !== 'selesai') {
+    const existingLock = findMatchingDeviceLock(token, room, deviceId, nisn, googleFormUrl);
+    if (existingLock) {
+      return res.json({
+        success: true,
+        alreadyCompleted: true,
+        lockInfo: existingLock,
+        roomRemainingSeconds: room.remainingSeconds,
+        isExamStarted: room.isExamStarted,
+      });
+    }
+  }
 
   let participant = room.participants[studentId];
 
@@ -743,12 +896,16 @@ app.post('/api/rooms/:token/student-sync', (req: Request, res: Response) => {
       violationsCount: 0,
       violationsLog: [],
       currentQuestionIndex: 1,
+      deviceId: deviceId ? String(deviceId) : undefined,
+      deviceType: deviceType ? String(deviceType) : undefined,
     };
     room.participants[studentId] = participant;
   }
 
   // Update ping and data
   participant.lastPing = Date.now();
+  if (deviceId) participant.deviceId = String(deviceId);
+  if (deviceType) participant.deviceType = String(deviceType);
   if (currentQuestionIndex !== undefined) participant.currentQuestionIndex = currentQuestionIndex;
   if (score !== undefined) participant.score = score;
   if (totalScore !== undefined) participant.totalScore = totalScore;
@@ -769,6 +926,39 @@ app.post('/api/rooms/:token/student-sync', (req: Request, res: Response) => {
 
   if (status && participant.status !== 'diblokir') {
     participant.status = status;
+  }
+
+  // Lock device + identity when exam is submitted
+  if (status === 'selesai' && !bypassDeviceLock) {
+    const cleanDevice = String(deviceId || participant.deviceId || '').trim().toLowerCase();
+    const lockRecord: ExamDeviceLockRecord = {
+      token,
+      googleFormUrl: googleFormUrl || room.googleFormUrl || '',
+      deviceId: cleanDevice,
+      nisn: String(nisn || participant.nisn || '-').trim(),
+      studentName: String(name || participant.name || 'Siswa CBT').trim(),
+      completedAt: Date.now(),
+    };
+    if (!room.completedLocks) room.completedLocks = [];
+    const alreadyInRoom = room.completedLocks.some(
+      (l) =>
+        (cleanDevice && l.deviceId.toLowerCase() === cleanDevice) ||
+        (lockRecord.nisn !== '-' && l.nisn.toLowerCase() === lockRecord.nisn.toLowerCase())
+    );
+    if (!alreadyInRoom && cleanDevice) {
+      room.completedLocks.push(lockRecord);
+    }
+    const formKey = normalizeFormLinkKey(lockRecord.googleFormUrl);
+    if (formKey && cleanDevice) {
+      const alreadyInForm = completedFormLocks.some(
+        (l) =>
+          normalizeFormLinkKey(l.googleFormUrl) === formKey &&
+          l.deviceId.toLowerCase() === cleanDevice
+      );
+      if (!alreadyInForm) {
+        completedFormLocks.push(lockRecord);
+      }
+    }
   }
 
   const responseWarning = participant.warningMessage || room.lastBroadcastAlert || null;
@@ -804,15 +994,66 @@ app.post('/api/rooms/:token/actions', (req: Request, res: Response) => {
     return res.json({ success: true, message: 'Peringatan berhasil dikirim.' });
   }
 
-  if (action === 'reset_unblock') {
+  if (action === 'reset_unblock' || action === 'reset_device_lock') {
+    const targetDeviceId = String(req.body.deviceId || '').trim().toLowerCase();
+    const targetNisn = String(req.body.nisn || '').trim().toLowerCase();
+
     if (studentId && room.participants[studentId]) {
       const p = room.participants[studentId];
+      const pDevice = (p.deviceId || targetDeviceId || '').toLowerCase();
+      const pNisn = (p.nisn || targetNisn || '').toLowerCase();
+
+      if (room.completedLocks) {
+        room.completedLocks = room.completedLocks.filter(
+          (l) =>
+            !(
+              (pDevice && l.deviceId.toLowerCase() === pDevice) ||
+              (pNisn && pNisn !== '-' && l.nisn.toLowerCase() === pNisn)
+            )
+        );
+      }
+
+      for (let i = completedFormLocks.length - 1; i >= 0; i--) {
+        const l = completedFormLocks[i];
+        if (
+          (pDevice && l.deviceId.toLowerCase() === pDevice) ||
+          (pNisn && pNisn !== '-' && l.nisn.toLowerCase() === pNisn)
+        ) {
+          completedFormLocks.splice(i, 1);
+        }
+      }
+
       p.status = 'mengerjakan';
-      p.violationsCount = Math.max(0, p.violationsCount - 1); // reduce 1 or reset
+      p.violationsCount = 0;
       p.lastPing = Date.now();
-      return res.json({ success: true, message: `Status ${p.name} berhasil di-reset menjadi Mengerjakan.` });
+      if (!room.unlockedLocks) room.unlockedLocks = [];
+      room.unlockedLocks.push({ deviceId: pDevice, nisn: pNisn, unlockedAt: Date.now() });
+      return res.json({
+        success: true,
+        message: `Akses & kunci perangkat untuk ${p.name} berhasil dibuka ulang.`,
+      });
     }
-    return res.status(400).json({ success: false, message: 'Siswa tidak ditemukan' });
+
+    if (targetDeviceId || targetNisn) {
+      if (room.completedLocks) {
+        room.completedLocks = room.completedLocks.filter(
+          (l) =>
+            !(
+              (targetDeviceId && l.deviceId.toLowerCase() === targetDeviceId) ||
+              (targetNisn && l.nisn.toLowerCase() === targetNisn)
+            )
+        );
+      }
+      if (!room.unlockedLocks) room.unlockedLocks = [];
+      room.unlockedLocks.push({
+        deviceId: targetDeviceId,
+        nisn: targetNisn,
+        unlockedAt: Date.now(),
+      });
+      return res.json({ success: true, message: 'Kunci perangkat berhasil di-reset.' });
+    }
+
+    return res.status(400).json({ success: false, message: 'Siswa atau perangkat tidak ditemukan' });
   }
 
   if (action === 'extend_time') {
@@ -840,6 +1081,201 @@ app.get('/api/rooms', (_req: Request, res: Response) => {
   return res.json({ success: true, rooms: Object.values(rooms) });
 });
 
+// API 8: Clear Data & Reset Logs / Live Sessions / Rooms
+app.post('/api/admin/clear-data', (req: Request, res: Response) => {
+  const scope = String(req.body?.scope || 'live_sessions');
+
+  if (scope === 'live_sessions' || scope === 'all' || scope === 'restore') {
+    for (const tokenKey of Object.keys(rooms)) {
+      rooms[tokenKey].participants = {};
+      rooms[tokenKey].completedLocks = [];
+      rooms[tokenKey].unlockedLocks = [];
+      rooms[tokenKey].lastBroadcastAlert = null;
+    }
+    completedFormLocks.splice(0, completedFormLocks.length);
+  }
+
+  if (scope === 'tokens' || scope === 'all') {
+    for (const tokenKey of Object.keys(rooms)) {
+      if (tokenKey !== 'LCXEIYU' && tokenKey !== 'ZJT0P4M') {
+        delete rooms[tokenKey];
+      }
+    }
+  }
+
+  if (scope === 'restore') {
+    for (const tokenKey of Object.keys(rooms)) {
+      if (tokenKey !== 'LCXEIYU' && tokenKey !== 'ZJT0P4M') {
+        delete rooms[tokenKey];
+      }
+    }
+  }
+
+  return res.json({ success: true, scope });
+});
+
+// ==========================================================
+// Teacher Accounts Store & API (/api/teachers)
+// ==========================================================
+export interface TeacherAccountRecord {
+  id: string;
+  name: string;
+  email: string;
+  password: string;
+  subject?: string;
+  school?: string;
+  role: 'Guru Mapel' | 'Admin Sekolah' | 'Pengawas';
+  status: 'Aktif' | 'Nonaktif';
+  createdAt: string;
+  source?: 'portal_daftar' | 'pengaturan';
+}
+
+const registeredTeachers: TeacherAccountRecord[] = [
+  {
+    id: 'teacher-default-1',
+    name: 'Apendi Mukdor, S.Pd.',
+    email: 'apendimukdor86@guru.smp.belajar.id',
+    password: 'guru123',
+    subject: 'Matematika & IPA',
+    school: 'SMP Negeri Penggerak',
+    role: 'Admin Sekolah',
+    status: 'Aktif',
+    createdAt: '2026-11-01T08:00:00.000Z',
+    source: 'pengaturan',
+  },
+];
+
+app.get('/api/teachers', (_req: Request, res: Response) => {
+  return res.json({ success: true, teachers: registeredTeachers });
+});
+
+app.post('/api/teachers', (req: Request, res: Response) => {
+  const { name, email, password, subject, school, role, status, source } = req.body || {};
+  const cleanName = String(name || '').trim();
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanPassword = String(password || '');
+
+  if (!cleanName || !cleanEmail || !cleanEmail.includes('@')) {
+    return res.status(400).json({ success: false, message: 'Nama dan email guru yang valid wajib diisi.' });
+  }
+  if (!cleanPassword || cleanPassword.length < 4) {
+    return res.status(400).json({ success: false, message: 'Kata sandi minimal 4 karakter.' });
+  }
+
+  const duplicate = registeredTeachers.find((t) => t.email.toLowerCase() === cleanEmail);
+  if (duplicate) {
+    return res.status(409).json({
+      success: false,
+      message: `Email "${cleanEmail}" sudah terdaftar di sistem.`,
+    });
+  }
+
+  const newTeacher: TeacherAccountRecord = {
+    id: 'teacher-' + Date.now(),
+    name: cleanName,
+    email: cleanEmail,
+    password: cleanPassword,
+    subject: String(subject || '').trim(),
+    school: String(school || '').trim(),
+    role: role === 'Admin Sekolah' || role === 'Pengawas' ? role : 'Guru Mapel',
+    status: status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+    createdAt: new Date().toISOString(),
+    source: source === 'portal_daftar' ? 'portal_daftar' : 'pengaturan',
+  };
+
+  registeredTeachers.unshift(newTeacher);
+  return res.json({ success: true, teacher: newTeacher, teachers: registeredTeachers });
+});
+
+app.post('/api/teachers/login', (req: Request, res: Response) => {
+  const { email, password } = req.body || {};
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanPassword = String(password || '');
+
+  const found = registeredTeachers.find((t) => t.email.toLowerCase() === cleanEmail);
+  if (!found) {
+    return res.status(404).json({
+      success: false,
+      message: 'Email guru belum terdaftar. Silakan daftar akun baru terlebih dahulu.',
+    });
+  }
+  if (found.status === 'Nonaktif') {
+    return res.status(403).json({
+      success: false,
+      message: 'Akun guru ini sedang dinonaktifkan di Pengaturan & Aplikasi.',
+    });
+  }
+  if (found.password !== cleanPassword) {
+    return res.status(401).json({
+      success: false,
+      message: 'Kata sandi tidak sesuai.',
+    });
+  }
+
+  return res.json({ success: true, teacher: found });
+});
+
+app.post('/api/teachers/sync', (req: Request, res: Response) => {
+  const list = Array.isArray(req.body?.teachers) ? req.body.teachers : [];
+  for (const item of list) {
+    if (!item || !item.email || !item.name) continue;
+    const emailLower = String(item.email).trim().toLowerCase();
+    const exists = registeredTeachers.some((t) => t.email.toLowerCase() === emailLower);
+    if (!exists) {
+      registeredTeachers.push({
+        id: String(item.id || 'teacher-' + Math.random().toString(36).slice(2, 8)),
+        name: String(item.name).trim(),
+        email: emailLower,
+        password: String(item.password || 'guru123'),
+        subject: item.subject ? String(item.subject) : '',
+        school: item.school ? String(item.school) : '',
+        role: item.role === 'Admin Sekolah' || item.role === 'Pengawas' ? item.role : 'Guru Mapel',
+        status: item.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+        createdAt: item.createdAt || new Date().toISOString(),
+        source: item.source === 'portal_daftar' ? 'portal_daftar' : 'pengaturan',
+      });
+    }
+  }
+  return res.json({ success: true, teachers: registeredTeachers });
+});
+
+app.patch('/api/teachers/:id', (req: Request, res: Response) => {
+  const target = registeredTeachers.find((t) => t.id === req.params.id);
+  if (!target) {
+    return res.status(404).json({ success: false, message: 'Pengguna guru tidak ditemukan.' });
+  }
+
+  const { name, email, password, subject, school, role, status } = req.body || {};
+  if (email !== undefined) {
+    const cleanEmail = String(email).trim().toLowerCase();
+    const duplicate = registeredTeachers.find((t) => t.id !== target.id && t.email.toLowerCase() === cleanEmail);
+    if (duplicate) {
+      return res.status(409).json({ success: false, message: `Email "${cleanEmail}" sudah dipakai akun lain.` });
+    }
+    if (cleanEmail) target.email = cleanEmail;
+  }
+  if (name !== undefined && String(name).trim()) target.name = String(name).trim();
+  if (password !== undefined && String(password).length >= 4) target.password = String(password);
+  if (subject !== undefined) target.subject = String(subject).trim();
+  if (school !== undefined) target.school = String(school).trim();
+  if (role === 'Guru Mapel' || role === 'Admin Sekolah' || role === 'Pengawas') target.role = role;
+  if (status === 'Aktif' || status === 'Nonaktif') target.status = status;
+
+  return res.json({ success: true, teacher: target, teachers: registeredTeachers });
+});
+
+app.delete('/api/teachers/:id', (req: Request, res: Response) => {
+  const idx = registeredTeachers.findIndex((t) => t.id === req.params.id);
+  if (idx === -1) {
+    return res.status(404).json({ success: false, message: 'Pengguna guru tidak ditemukan.' });
+  }
+  if (registeredTeachers[idx].id === 'teacher-default-1') {
+    return res.status(400).json({ success: false, message: 'Akun utama default tidak dapat dihapus.' });
+  }
+  registeredTeachers.splice(idx, 1);
+  return res.json({ success: true, teachers: registeredTeachers });
+});
+
 // Setup Vite dev server or static serve
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
@@ -849,9 +1285,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const distPath = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distPath));
     app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
 

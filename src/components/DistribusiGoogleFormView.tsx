@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ExternalLink, Clock, PlusCircle, Folder, Edit3, Send, Play, Pause, AlertCircle, FileSpreadsheet } from 'lucide-react';
 import { ExamTokenConfig } from '../types';
 
@@ -18,6 +18,12 @@ export const DistribusiGoogleFormView: React.FC<DistribusiGoogleFormViewProps> =
   const [googleFormUrl, setGoogleFormUrl] = useState(config.googleFormUrl);
   const [googleFormEditUrl, setGoogleFormEditUrl] = useState(config.googleFormEditUrl || '');
   const [driveFolderUrl, setDriveFolderUrl] = useState(config.driveFolderUrl || '');
+
+  useEffect(() => {
+    setGoogleFormUrl(config.googleFormUrl || '');
+    setGoogleFormEditUrl(config.googleFormEditUrl || '');
+    setDriveFolderUrl(config.driveFolderUrl || '');
+  }, [config.googleFormUrl, config.googleFormEditUrl, config.driveFolderUrl]);
 
   const formatSeconds = (sec: number) => {
     const hours = Math.floor(sec / 3600);

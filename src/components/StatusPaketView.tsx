@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
 import { CreditCard, CheckCircle2, ShieldCheck, Sparkles, Clock, ArrowRight, Zap, Check } from 'lucide-react';
 
-export const StatusPaketView: React.FC = () => {
+interface StatusPaketViewProps {
+  teacherEmail?: string;
+  teacherName?: string;
+}
+
+export const StatusPaketView: React.FC<StatusPaketViewProps> = ({
+  teacherEmail = 'apendimukdor86@guru.smp.belajar.id',
+  teacherName,
+}) => {
   const [selectedPlan, setSelectedPlan] = useState<'pro' | 'school'>('pro');
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
@@ -39,7 +47,7 @@ export const StatusPaketView: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500 font-mono mt-0.5">
-                Akun: apendimukdor86@guru.smp.belajar.id
+                Akun: {teacherName ? `${teacherName} (${teacherEmail})` : teacherEmail}
               </p>
             </div>
           </div>

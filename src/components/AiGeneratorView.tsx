@@ -85,15 +85,6 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
     return () => clearProgressTimers();
   }, []);
 
-  // Quick preset loader
-  const handleApplyPreset = (pSubject: string, pGrade: string, pTopic: string, pQuestions = 10, pNotes = '') => {
-    setSubject(pSubject);
-    setGrade(pGrade);
-    setTopic(pTopic);
-    setTotalQuestions(pQuestions);
-    if (pNotes) setNotes(pNotes);
-  };
-
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -361,47 +352,6 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
             <span className="text-[11px] font-normal text-slate-400">Kurikulum Merdeka</span>
           </div>
 
-          {/* Quick Preset Buttons */}
-          <div>
-            <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1.5">
-              Pilihan Cepat Materi:
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => handleApplyPreset('Matematika', 'SMP', 'Tabung', 10, 'Luas Permukaan, Volume, dan Jaring-jaring Tabung')}
-                className={`px-2.5 py-1 text-[11px] font-medium rounded-lg border transition-colors cursor-pointer ${
-                  topic === 'Tabung'
-                    ? 'bg-indigo-600 text-white border-indigo-500 font-semibold'
-                    : 'bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:border-slate-400'
-                }`}
-              >
-                Tabung · SMP (10 Soal)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleApplyPreset('Ilmu Pengetahuan Alam (IPA)', 'SMP Kelas 7', 'Sistem Tata Surya & Karakteristik Planet', 10, 'Capaian Pembelajaran Fase D')}
-                className="px-2.5 py-1 text-[11px] font-medium bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-slate-400 transition-colors cursor-pointer"
-              >
-                IPA Tata Surya
-              </button>
-              <button
-                type="button"
-                onClick={() => handleApplyPreset('Matematika', 'SMP', 'Teorema Pythagoras & Segitiga', 10, 'Penerapan Tripel Pythagoras')}
-                className="px-2.5 py-1 text-[11px] font-medium bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-slate-400 transition-colors cursor-pointer"
-              >
-                Pythagoras
-              </button>
-              <button
-                type="button"
-                onClick={() => handleApplyPreset('Fisika SMA/SMK', 'SMA Kelas 10', 'Hukum Newton tentang Gerak', 10, 'Analisis Gaya Normal dan Gesek')}
-                className="px-2.5 py-1 text-[11px] font-medium bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-slate-400 transition-colors cursor-pointer"
-              >
-                Fisika SMA
-              </button>
-            </div>
-          </div>
-
           <form onSubmit={handleGenerate} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
@@ -417,12 +367,12 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
                 <option value="Bahasa Indonesia">Bahasa Indonesia</option>
                 <option value="Bahasa Inggris">Bahasa Inggris</option>
                 <option value="Ilmu Pengetahuan Sosial (IPS)">Ilmu Pengetahuan Sosial (IPS)</option>
+                <option value="Penjaskes">Penjaskes</option>
+                <option value="Seni dan Budaya">Seni dan Budaya</option>
+                <option value="Bahasa Sunda">Bahasa Sunda</option>
                 <option value="Informatika">Informatika</option>
                 <option value="Pendidikan Pancasila (PPKn)">Pendidikan Pancasila (PPKn)</option>
                 <option value="Pendidikan Agama & Budi Pekerti">Pendidikan Agama & Budi Pekerti</option>
-                <option value="Fisika SMA/SMK">Fisika SMA/SMK</option>
-                <option value="Biologi SMA/SMK">Biologi SMA/SMK</option>
-                <option value="Kimia SMA/SMK">Kimia SMA/SMK</option>
               </select>
             </div>
 
@@ -443,10 +393,6 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
                   <option value="SD Kelas 4">SD Kelas 4</option>
                   <option value="SD Kelas 5">SD Kelas 5</option>
                   <option value="SD Kelas 6">SD Kelas 6</option>
-                  <option value="SMA Kelas 10">SMA Kelas 10</option>
-                  <option value="SMA Kelas 11">SMA Kelas 11</option>
-                  <option value="SMA Kelas 12">SMA Kelas 12</option>
-                  <option value="SMK Kelas 10-12">SMK Kelas 10-12</option>
                 </select>
               </div>
 

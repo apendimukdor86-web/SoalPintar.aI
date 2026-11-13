@@ -16,6 +16,9 @@ import {
   X,
   FileCode,
   LayoutDashboard,
+  Radio,
+  FileText,
+  Eraser,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -23,9 +26,13 @@ interface SidebarProps {
   onSelectTab: (tab: string) => void;
   onOpenProjector: () => void;
   onOpenStudentMode: () => void;
+  onLogout: () => void;
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   tokenCode: string;
+  teacherName?: string;
+  teacherEmail?: string;
+  teachersCount?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -33,9 +40,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectTab,
   onOpenProjector,
   onOpenStudentMode,
+  onLogout,
   isOpenMobile,
   onCloseMobile,
   tokenCode,
+  teacherName = 'Apendi Mukdor',
+  teacherEmail = 'apendimukdor86@guru.smp.belajar.id',
+  teachersCount = 1,
 }) => {
   const menuGroups = [
     {
@@ -64,6 +75,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           number: '2',
           icon: BookOpen,
         },
+        {
+          id: 'google_forms',
+          label: 'Google Forms',
+          number: '3',
+          icon: FileText,
+        },
       ],
     },
     {
@@ -72,14 +89,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           id: 'token',
           label: 'Token Siswa',
-          number: '3',
+          number: '4',
           icon: KeyRound,
           badge: tokenCode,
         },
         {
           id: 'distribusi',
           label: 'Distribusi Google Form',
-          number: '4',
+          number: '5',
           icon: FileSpreadsheet,
         },
       ],
@@ -89,9 +106,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       items: [
         {
           id: 'monitoring',
-          label: 'Ujian Live (Real-Time)',
-          number: '5',
-          icon: Users,
+          label: 'Ujian Live',
+          number: '6',
+          icon: Radio,
         },
       ],
     },
@@ -116,11 +133,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
       groupTitle: 'PENGATURAN & APLIKASI',
       items: [
         {
+          id: 'teacher_users',
+          label: 'Pengguna Guru',
+          number: '11',
+          icon: Users,
+          badge: String(teachersCount),
+        },
+        {
           id: 'settings_gas',
           label: 'Setting Web App (Code.gs)',
           number: 'GS',
           icon: FileCode,
-          badge: 'v3.2',
+          badge: 'v3.3',
+        },
+        {
+          id: 'clear_data',
+          label: 'Clear Data & Cache',
+          number: '12',
+          icon: Eraser,
         },
         {
           id: 'download',
@@ -264,19 +294,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span>Buka Portal Siswa (CBT)</span>
           </button>
 
-          {/* User Account Info */}
+          {/* User Account Info & Logout */}
           <div className="px-2 py-1.5 flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center font-bold text-xs shrink-0">
-              AP
+            <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center font-bold text-xs shrink-0 uppercase">
+              {teacherName.slice(0, 2) || 'GR'}
             </div>
             <div className="truncate flex-1">
               <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                Apendi Mukdor
+                {teacherName}
               </div>
               <div className="text-[10px] text-slate-400 truncate font-mono">
-                @guru.smp.belajar.id
+                {teacherEmail}
               </div>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                onCloseMobile();
+                onLogout();
+              }}
+              className="p-2 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors shrink-0 cursor-pointer"
+              title="Logout Guru"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </aside>

@@ -21,10 +21,15 @@ import {
   ShieldCheck,
   Zap,
   AlertCircle,
+  AlertTriangle,
   FileCode,
   X,
   Link as LinkIcon,
   HelpCircle,
+  Eye,
+  FilePlus,
+  GraduationCap,
+  FileUp,
 } from 'lucide-react';
 import { QuestionItem, QuestionPackage } from '../types';
 
@@ -194,6 +199,7 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
     editUrl: string;
     folder: string;
     isExisting?: boolean;
+    needsScriptUpdate?: boolean;
   } | null>(null);
   const [copiedLink, setCopiedLink] = useState<'view' | 'edit' | null>(null);
 
@@ -205,8 +211,22 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
   // Top action modal for selecting package to convert to Google Form
   const [showSelectPkgModal, setShowSelectPkgModal] = useState(false);
 
+  // Word / PDF Import Modal State
+  const [showWordPdfModal, setShowWordPdfModal] = useState(false);
+  const [importWordPdfText, setImportWordPdfText] = useState('');
+  const [importWordPdfTitle, setImportWordPdfTitle] = useState('');
+  const [importWordPdfSubject, setImportWordPdfSubject] = useState('Matematika');
+  const [importWordPdfGrade, setImportWordPdfGrade] = useState('SMP');
+
   const subjects = ['Semua', ...Array.from(new Set(packages.map((p) => p.subject)))];
-  const grades = ['Semua', ...Array.from(new Set(packages.map((p) => p.grade)))];
+  const uniqueGrades = Array.from(
+    new Set(
+      packages
+        .map((p) => (p.grade.includes('SMP') ? 'SMP' : p.grade.includes('SD') ? 'SD' : p.grade))
+        .filter((g) => !g.includes('SMA') && !g.includes('SMK') && !g.includes('Kelas 10') && !g.includes('Kelas 11') && !g.includes('Kelas 12'))
+    )
+  );
+  const grades = ['Semua', ...Array.from(new Set(['SMP', 'SD', ...uniqueGrades]))];
 
   const filteredPackages = packages.filter((pkg) => {
     const matchSearch =
@@ -214,9 +234,134 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
       pkg.topic.toLowerCase().includes(searchQuery.toLowerCase()) ||
       pkg.subject.toLowerCase().includes(searchQuery.toLowerCase());
     const matchSubject = selectedSubject === 'Semua' || pkg.subject === selectedSubject;
-    const matchGrade = selectedGrade === 'Semua' || pkg.grade === selectedGrade;
+    const matchGrade =
+      selectedGrade === 'Semua' ||
+      pkg.grade === selectedGrade ||
+      pkg.grade.toLowerCase().includes(selectedGrade.toLowerCase());
     return matchSearch && matchSubject && matchGrade;
   });
+
+  // Handle parse and import from Word/PDF
+  const handleExecuteImportWordPdf = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!importWordPdfText.trim()) {
+      showToast('Mohon masukkan atau tempel teks soal dari Word/PDF.');
+      return;
+    }
+
+    const rawLines = importWordPdfText.split('\n');
+    const parsedQuestions: QuestionItem[] = [];
+    let currentQ: Partial<QuestionItem> | null = null;
+    let currentOptions: { key: string; text: string }[] = [];
+
+    const flushCurrentQ = () => {
+      if (currentQ && currentQ.question) {
+        const defaultOptions = ['A', 'B', 'C', 'D'];
+        while (currentOptions.length < 4) {
+          const nextKey = defaultOptions[currentOptions.length] || `Opt${currentOptions.length + 1}`;
+          currentOptions.push({ key: nextKey, text: `Pilihan ${nextKey}` });
+        }
+        parsedQuestions.push({
+          id: `q-${Date.now()}-${parsedQuestions.length + 1}`,
+          number: parsedQuestions.length + 1,
+          type: 'pilihan_ganda',
+          question: currentQ.question.trim(),
+          options: currentOptions,
+          correctAnswer: currentQ.correctAnswer || 'A',
+          explanation: currentQ.explanation || 'Pembahasan kunci jawaban.',
+          cognitiveLevel: currentQ.cognitiveLevel || 'C3 - Aplikasi',
+          points: 10,
+        });
+        currentQ = null;
+        currentOptions = [];
+      }
+    };
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i].trim();
+      if (!line) continue;
+
+      const qMatch = line.match(/^(?:(?:No\.?\s*)?(\d+)[.)\s]+)(.*)/i);
+      const optMatch = line.match(/^([A-Da-d])[.)\s]+(.*)/);
+      const keyMatch = line.match(/^(?:Kunci(?:\s+Jawaban)?|Jawaban|Ans)\s*[:=]\s*([A-Da-d])/i);
+      const explMatch = line.match(/^(?:Pembahasan|Penjelasan|Explanation)\s*[:=]\s*(.*)/i);
+
+      if (qMatch && !line.startsWith('A.') && !line.startsWith('B.') && !line.startsWith('C.') && !line.startsWith('D.')) {
+        flushCurrentQ();
+        currentQ = {
+          question: qMatch[2] || 'Pertanyaan...',
+          correctAnswer: 'A',
+          explanation: '',
+        };
+      } else if (optMatch && currentQ) {
+        currentOptions.push({
+          key: optMatch[1].toUpperCase(),
+          text: optMatch[2] || '',
+        });
+      } else if (keyMatch && currentQ) {
+        currentQ.correctAnswer = keyMatch[1].toUpperCase();
+      } else if (explMatch && currentQ) {
+        currentQ.explanation = explMatch[1];
+      } else if (currentQ) {
+        if (currentOptions.length > 0) {
+          currentOptions[currentOptions.length - 1].text += ' ' + line;
+        } else {
+          currentQ.question = (currentQ.question || '') + ' ' + line;
+        }
+      }
+    }
+    flushCurrentQ();
+
+    if (parsedQuestions.length === 0) {
+      const paragraphs = importWordPdfText.split(/\n\s*\n/).filter((p) => p.trim().length > 5);
+      paragraphs.forEach((p, idx) => {
+        parsedQuestions.push({
+          id: `q-${Date.now()}-${idx + 1}`,
+          number: idx + 1,
+          type: 'pilihan_ganda',
+          question: p.trim(),
+          options: [
+            { key: 'A', text: 'Pilihan Jawaban A' },
+            { key: 'B', text: 'Pilihan Jawaban B' },
+            { key: 'C', text: 'Pilihan Jawaban C' },
+            { key: 'D', text: 'Pilihan Jawaban D' },
+          ],
+          correctAnswer: 'A',
+          explanation: 'Pembahasan butir soal.',
+          cognitiveLevel: 'C3 - Aplikasi',
+          points: 10,
+        });
+      });
+    }
+
+    if (parsedQuestions.length === 0) {
+      showToast('Tidak ada butir soal yang berhasil diparsing. Cek teks.');
+      return;
+    }
+
+    const title = importWordPdfTitle.trim() || 'Paket Impor Word/PDF';
+    const batch = Math.random().toString(36).substring(2, 10).toUpperCase();
+
+    const newPkg: QuestionPackage = {
+      id: `pkg-${Date.now()}`,
+      title,
+      subject: importWordPdfSubject.trim() || 'Matematika',
+      grade: importWordPdfGrade || 'SMP',
+      topic: title,
+      status: 'Draft',
+      batchCode: batch,
+      timeAgo: 'Baru saja',
+      optionCount: 4,
+      createdAt: new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }),
+      questions: parsedQuestions,
+    };
+
+    onAddPackage(newPkg);
+    setShowWordPdfModal(false);
+    setImportWordPdfText('');
+    setImportWordPdfTitle('');
+    showToast(`Paket "${newPkg.title}" (${newPkg.questions.length} butir soal) berhasil diimpor!`);
+  };
 
   // CONFIRMED DELETE ACTION
   const handleConfirmDelete = () => {
@@ -384,15 +529,16 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
 
     // Format questions for Google Apps Script bridge
     const totalQuestions = selectedPkgForForm.questions.length;
-    const formattedQuestions = selectedPkgForForm.questions.map((q, idx) => {
+    const formattedQuestions = selectedPkgForForm.questions.map((q) => {
       const optionsArray = (q.options || []).map((o) => `${o.key}. ${o.text}`);
       let correctIndex = (q.options || []).findIndex((o) => o.key === q.correctAnswer || o.text === q.correctAnswer);
       if (correctIndex === -1) correctIndex = 0;
+      const cleanQuestion = q.question.replace(/^\s*(?:undefined\.?\s*|\.\s+|(?:No\.?\s*)?\d+\s*[.)]\s*)+/i, '').trim();
 
       return {
-        number: idx + 1,
+        number: '',
         type: q.type === 'pilihan_ganda' ? 'choice' : 'essay',
-        question: q.stimulus ? `${q.stimulus}\n\n${q.question}` : q.question,
+        question: q.stimulus ? `${q.stimulus}\n\n${cleanQuestion}` : cleanQuestion,
         options: optionsArray,
         answer: correctIndex,
       };
@@ -427,6 +573,7 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
           editUrl: data.edit_url,
           folder: data.folder || `v2-soalpintar.ai/${selectedPkgForForm.subject}`,
           isExisting: data.data?.is_existing || false,
+          needsScriptUpdate: Boolean(data.needsScriptUpdate),
         };
         setFormSuccessResult(result);
 
@@ -509,286 +656,253 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      {/* Header matching screenshot */}
+      <div className="flex items-center justify-between">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-              Bank Soal Guru Terpusat
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300">
-              Otomasi Google Forms
-            </span>
-          </div>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Kelola seluruh bank soal Anda, ekspor dan buat Google Form Kuis secara otomatis ke Google Drive, atau langsung distribusikan dengan token ujian anti-curang.
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white">
+            Bank Soal
+          </h1>
+          <p className="mt-1 text-xs md:text-sm text-slate-400">
+            Koleksi quiz yang sudah Anda buat
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Top Quick Action: Buat Google Form Otomatis */}
-          <button
-            onClick={() => setShowSelectPkgModal(true)}
-            className="px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 rounded-xl transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
-          >
-            <Zap className="w-3.5 h-3.5 text-amber-300" />
-            Buat Google Form Otomatis
-          </button>
-
-          <button
-            onClick={onGoToAiGenerator}
-            className="px-3.5 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 rounded-xl hover:bg-emerald-100 transition-colors flex items-center gap-1.5 cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            AI Generator
-          </button>
-
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 transition-colors flex items-center gap-1.5 cursor-pointer"
-          >
-            <Edit3 className="w-3.5 h-3.5" />
-            Tambah Manual
-          </button>
+        {/* Role Pill */}
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#0d221e] border border-emerald-800/60 text-emerald-400 text-xs font-medium shadow-xs">
+          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span>Guru</span>
         </div>
       </div>
 
-      {/* Info Banner: Otomatisasi Google Form */}
-      <div className="bg-purple-950/30 border border-purple-900/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-purple-200">
-        <div className="flex items-start sm:items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-purple-900/60 border border-purple-700/60 text-purple-300 flex items-center justify-center shrink-0">
-            <Sparkles className="w-4 h-4 text-amber-300" />
-          </div>
-          <div>
-            <div className="font-semibold text-white flex items-center gap-2">
-              <span>Fitur Otomatisasi Google Form (Code.gs v3.2)</span>
-              {webAppUrl ? (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-900/60 border border-emerald-700/80 text-emerald-300 font-normal">
-                  ✓ Web App Terhubung
-                </span>
-              ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/60 border border-amber-700/80 text-amber-300 font-normal">
-                  Belum Ada URL Web App
-                </span>
-              )}
+      {/* Search & Filter Panel matching screenshot */}
+      <div className="bg-[#0b1324] border border-slate-800/80 rounded-2xl p-5 md:p-6 shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-end gap-3.5">
+          {/* Cari Topik */}
+          <div className="flex-1 space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-300">
+              Cari Topik
+            </label>
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Cari berdasarkan topik..."
+                className="w-full text-xs pl-9 pr-3.5 py-2.5 bg-[#0e172a] border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 transition-colors"
+              />
             </div>
-            <p className="text-purple-300/80 mt-0.5 text-[11px]">
-              Klik tombol <strong className="text-white">"⚡ Buat Google Form"</strong> di setiap kartu soal untuk otomatis mengonversi butir soal menjadi kuis Google Form di Google Drive Anda.
-            </p>
-          </div>
-        </div>
-
-        {onOpenGasSettings && (
-          <button
-            onClick={onOpenGasSettings}
-            className="whitespace-nowrap px-3 py-1.5 bg-purple-800/80 hover:bg-purple-700 text-white rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-auto shrink-0"
-          >
-            <Settings className="w-3.5 h-3.5" />
-            Setting Web App
-          </button>
-        )}
-      </div>
-
-      {/* Filter and Search Bar */}
-      <div className="bg-white dark:bg-[#0b1324] border border-slate-200 dark:border-slate-800/80 rounded-2xl p-4 flex flex-col md:flex-row gap-3 items-center justify-between shadow-xs">
-        <div className="relative w-full md:w-80">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Cari mata pelajaran, bab, atau judul kuis..."
-            className="w-full text-xs pl-9 pr-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-purple-500"
-          />
-        </div>
-
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          <div className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap">
-            <span>Mapel:</span>
-            <select
-              value={selectedSubject}
-              onChange={(e) => setSelectedSubject(e.target.value)}
-              className="text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2.5 py-1.5 text-slate-900 dark:text-slate-100"
-            >
-              {subjects.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
           </div>
 
-          <div className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap">
-            <span>Jenjang:</span>
-            <select
-              value={selectedGrade}
-              onChange={(e) => setSelectedGrade(e.target.value)}
-              className="text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2.5 py-1.5 text-slate-900 dark:text-slate-100"
+          {/* Jenjang */}
+          <div className="w-full md:w-36 space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-300">
+              Jenjang
+            </label>
+            <div className="relative">
+              <select
+                value={selectedGrade}
+                onChange={(e) => setSelectedGrade(e.target.value)}
+                className="w-full appearance-none text-xs px-3.5 py-2.5 bg-[#0e172a] border border-slate-800 rounded-xl text-slate-100 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 transition-colors cursor-pointer pr-8"
+              >
+                {grades.map((g) => (
+                  <option key={g} value={g} className="bg-[#0e172a] text-slate-100">
+                    {g}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Buttons: Filter, Generate Baru, Impor dari Word/PDF */}
+          <div className="flex flex-wrap items-center gap-2 pt-1 md:pt-0">
+            <button
+              type="button"
+              onClick={() => {}}
+              className="px-5 py-2.5 bg-[#4f46e5] hover:bg-[#4338ca] text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs"
             >
-              {grades.map((g) => (
-                <option key={g} value={g}>
-                  {g}
-                </option>
-              ))}
-            </select>
+              Filter
+            </button>
+
+            <button
+              type="button"
+              onClick={onGoToAiGenerator}
+              className="px-4 py-2.5 bg-[#059669] hover:bg-[#047857] text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Generate Baru</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowWordPdfModal(true)}
+              className="px-4 py-2.5 bg-[#141d31] hover:bg-[#1b2640] border border-slate-700/60 text-slate-200 rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+            >
+              <FileUp className="w-3.5 h-3.5 text-slate-300" />
+              <span>Impor dari Word/PDF</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Packages List */}
+      {/* Packages List matching screenshot cards */}
       <div className="space-y-4">
         {filteredPackages.length === 0 ? (
-          <div className="p-12 text-center bg-white dark:bg-[#0b1324] border border-slate-200 dark:border-slate-800/80 rounded-2xl text-slate-500 text-xs">
+          <div className="p-12 text-center bg-[#0b1324] border border-slate-800/80 rounded-2xl text-slate-400 text-xs">
             Tidak ada paket soal yang cocok dengan filter pencarian.
           </div>
         ) : (
           filteredPackages.map((pkg) => {
             const isExpanded = expandedPackageId === pkg.id;
             const hasRealForm = Boolean(pkg.googleFormUrl && pkg.googleFormUrl.startsWith('https://docs.google.com/forms/'));
+            const gradeBadgeText = pkg.grade.includes('SMP') ? 'SMP' : pkg.grade.includes('SMA') ? 'SMA' : pkg.grade.includes('SD') ? 'SD' : pkg.grade.includes('SMK') ? 'SMK' : pkg.grade;
+            const batchCode = pkg.batchCode || `DS${pkg.id.substring(Math.max(0, pkg.id.length - 6)).toUpperCase()}`;
+            const timeAgo = pkg.timeAgo || '1 hari yang lalu';
+            const optCount = pkg.optionCount || 4;
 
             return (
               <div
                 key={pkg.id}
-                className="bg-white dark:bg-[#0b1324] border border-slate-200 dark:border-slate-800/80 rounded-2xl shadow-xs overflow-hidden transition-all hover:border-slate-300 dark:hover:border-slate-700"
+                className="bg-[#0b1324] border border-slate-800/80 rounded-2xl p-5 md:p-6 shadow-sm hover:border-slate-700/80 transition-all"
               >
-                {/* Package Head */}
-                <div className="p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-slate-100 dark:border-slate-800/60">
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
-                        {pkg.subject}
-                      </span>
-                      <span className="text-xs text-slate-500 dark:text-slate-400">· {pkg.grade}</span>
-                      <span className="text-xs text-slate-400 dark:text-slate-500">· Dibuat {pkg.createdAt}</span>
+                <div className="flex items-start gap-4">
+                  {/* Left Square Badge displaying Grade (e.g. SMP) */}
+                  <div className="w-13 h-13 rounded-2xl bg-[#142138] border border-blue-900/60 flex items-center justify-center text-[#4da8ff] font-bold text-xs tracking-wider shrink-0 mt-0.5 shadow-xs">
+                    {gradeBadgeText}
+                  </div>
 
-                      {/* Google Form Status Badge */}
-                      {hasRealForm ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/70 px-2 py-0.5 rounded-md">
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          Google Form Siap
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-slate-400 bg-slate-100 dark:bg-slate-800/60 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700/60">
-                          Form Belum Dibuat
+                  {/* Main Details */}
+                  <div className="flex-1 min-w-0">
+                    {/* Row 1: Title + Draft Badge */}
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h3 className="text-base md:text-lg font-bold text-white tracking-tight">
+                        {pkg.title}
+                      </h3>
+                      <span className="bg-amber-950/60 border border-amber-700/50 text-amber-400 text-[11px] px-2 py-0.5 rounded-md font-medium">
+                        {pkg.status || 'Draft'}
+                      </span>
+                      {hasRealForm && (
+                        <span className="bg-emerald-950/60 border border-emerald-800/60 text-emerald-400 text-[11px] px-2 py-0.5 rounded-md font-medium flex items-center gap-1">
+                          <Check className="w-3 h-3" />
+                          Form Siap
                         </span>
                       )}
                     </div>
 
-                    <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 leading-snug">
-                      {pkg.title}
-                    </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Materi: <strong className="text-slate-700 dark:text-slate-300">{pkg.topic}</strong> ({pkg.questions.length} Butir Soal Terdaftar)
+                    {/* Row 2: Grade Pill Tag */}
+                    <div className="mt-1.5">
+                      <span className="bg-[#0c1d38] border border-blue-900/50 text-[#5ca8ff] text-xs px-2.5 py-0.5 rounded-lg inline-flex items-center gap-1.5 font-medium">
+                        <GraduationCap className="w-3.5 h-3.5" />
+                        <span>{gradeBadgeText}</span>
+                      </span>
+                    </div>
+
+                    {/* Row 3: Metadata line */}
+                    <p className="mt-2 text-xs text-slate-400">
+                      {pkg.questions.length} soal · {optCount} opsi · Batch {batchCode} · {timeAgo}
                     </p>
 
-                    {/* Quick Google Form Links if already created */}
+                    {/* Row 4: Action Buttons */}
+                    <div className="mt-4 flex flex-wrap items-center gap-2.5">
+                      {/* Lihat Soal */}
+                      <button
+                        type="button"
+                        onClick={() => setExpandedPackageId(isExpanded ? null : pkg.id)}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer border ${
+                          isExpanded
+                            ? 'bg-indigo-900/50 border-indigo-700 text-indigo-200'
+                            : 'bg-[#141d33] hover:bg-[#1c2949] border-indigo-900/50 text-[#818cf8]'
+                        }`}
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>{isExpanded ? 'Tutup Soal' : 'Lihat Soal'}</span>
+                      </button>
+
+                      {/* Buat Google Form */}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenCreateFormModal(pkg)}
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-medium bg-[#08201c] hover:bg-[#0e332c] border border-emerald-900/60 text-[#34d399] flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Otomatis buat formulir Google Form di Google Drive"
+                      >
+                        <FilePlus className="w-3.5 h-3.5" />
+                        <span>{hasRealForm ? 'Kelola Google Form' : 'Buat Google Form'}</span>
+                      </button>
+
+                      {/* Hapus */}
+                      <button
+                        type="button"
+                        onClick={() => setPkgToDelete(pkg)}
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-medium bg-[#231219] hover:bg-[#341723] border border-rose-900/60 text-[#f87171] flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Hapus paket soal ini"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Hapus</span>
+                      </button>
+
+                      {/* Extra Helper: Perbaiki Data */}
+                      <button
+                        type="button"
+                        onClick={() => setEditingPackage({ ...pkg })}
+                        className="px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:text-indigo-300 hover:bg-slate-800/60 rounded-xl transition-colors cursor-pointer flex items-center gap-1"
+                        title="Perbaiki judul, materi, atau metadata"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                        <span className="hidden sm:inline">Edit</span>
+                      </button>
+
+                      {/* Extra Helper: Jadikan Token CBT */}
+                      <button
+                        type="button"
+                        onClick={() => onDistributePackage(pkg)}
+                        className="px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:text-emerald-300 hover:bg-slate-800/60 rounded-xl transition-colors cursor-pointer flex items-center gap-1"
+                        title="Kirim ke Ujian CBT / Bagikan Token Siswa"
+                      >
+                        <Send className="w-3 h-3" />
+                        <span className="hidden sm:inline">Token CBT</span>
+                      </button>
+
+                      {/* Download JSON */}
+                      <button
+                        type="button"
+                        onClick={() => exportToJson(pkg)}
+                        className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+                        title="Unduh file JSON"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Quick Link to Google Form if ready */}
                     {hasRealForm && (
-                      <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+                      <div className="mt-3 pt-3 border-t border-slate-800/60 flex flex-wrap items-center gap-3 text-xs">
                         <a
                           href={pkg.googleFormUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-purple-400 hover:text-purple-300 font-medium bg-purple-950/40 hover:bg-purple-950/70 border border-purple-800/50 px-2.5 py-1 rounded-lg transition-colors"
+                          className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-medium"
                         >
                           <ExternalLink className="w-3 h-3" />
-                          <span>Form Siswa</span>
+                          <span>Buka Google Form Siswa</span>
                         </a>
-
                         {pkg.googleFormEditUrl && (
                           <a
                             href={pkg.googleFormEditUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-medium bg-indigo-950/40 hover:bg-indigo-950/70 border border-indigo-800/50 px-2.5 py-1 rounded-lg transition-colors"
+                            className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-medium"
                           >
                             <Edit3 className="w-3 h-3" />
-                            <span>Editor Form</span>
+                            <span>Buka Editor Google Form</span>
                           </a>
                         )}
-
-                        <button
-                          onClick={() => handleOpenCreateFormModal(pkg)}
-                          className="inline-flex items-center gap-1 text-slate-400 hover:text-slate-200 font-medium px-2 py-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                          title="Generate ulang atau perbarui Google Form"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                          <span>Update Form</span>
-                        </button>
                       </div>
                     )}
                   </div>
-
-                  {/* Actions */}
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {/* PRIMARY ACTION: Buat Google Form Otomatis */}
-                    <button
-                      onClick={() => handleOpenCreateFormModal(pkg)}
-                      className="px-3 py-1.5 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 active:bg-purple-800 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
-                      title="Otomatis buat formulir kuis Google Form di Google Drive"
-                    >
-                      <Zap className="w-3.5 h-3.5 text-amber-300" />
-                      {hasRealForm ? 'Kelola Google Form' : 'Buat Google Form Otomatis'}
-                    </button>
-
-                    {/* Secondary: Buat Token / Distribusikan */}
-                    <button
-                      onClick={() => onDistributePackage(pkg)}
-                      className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
-                      title="Buat Token ujian untuk siswa"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      Jadikan Token CBT
-                    </button>
-
-                    {/* Code.gs script viewer */}
-                    <button
-                      onClick={() => handleOpenGasScript(pkg)}
-                      className="px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 bg-slate-100 dark:bg-slate-800 rounded-xl transition-colors flex items-center gap-1 cursor-pointer"
-                      title="Lihat / Ekspor Script Code.gs"
-                    >
-                      <FileCode className="w-3.5 h-3.5" />
-                    </button>
-
-                    {/* EDIT PACKAGE: Perbaiki Data Paket */}
-                    <button
-                      onClick={() => setEditingPackage({ ...pkg })}
-                      className="px-2.5 py-1.5 text-xs font-medium text-indigo-400 hover:text-white bg-indigo-950/40 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
-                      title="Perbaiki judul, materi, jenjang, atau tautan paket soal"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>Perbaiki Data</span>
-                    </button>
-
-                    {/* Download JSON */}
-                    <button
-                      onClick={() => exportToJson(pkg)}
-                      className="px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 bg-slate-100 dark:bg-slate-800 rounded-xl transition-colors flex items-center gap-1 cursor-pointer"
-                      title="Unduh file JSON"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                    </button>
-
-                    {/* DELETE BUTTON: Opens Custom UI Delete Confirmation Modal */}
-                    <button
-                      onClick={() => setPkgToDelete(pkg)}
-                      className="px-2.5 py-1.5 text-xs font-medium text-rose-500 hover:text-white hover:bg-rose-600 dark:bg-rose-950/40 dark:hover:bg-rose-600 border border-rose-300 dark:border-rose-900/60 rounded-xl transition-colors cursor-pointer flex items-center gap-1"
-                      title="Hapus paket soal ini"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Hapus</span>
-                    </button>
-
-                    {/* Expand/Collapse */}
-                    <button
-                      onClick={() => setExpandedPackageId(isExpanded ? null : pkg.id)}
-                      className="px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 flex items-center gap-1 cursor-pointer"
-                    >
-                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                    </button>
-                  </div>
                 </div>
 
-                {/* Expanded Questions Details */}
+                {/* Expanded Questions Section (from Lihat Soal) */}
                 {isExpanded && (
                   <div className="p-5 bg-slate-50/50 dark:bg-[#070d18] space-y-4">
                     <div className="flex items-center justify-between text-xs text-slate-500">
@@ -991,8 +1105,6 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
                     <option value="SMP Kelas 7">SMP Kelas 7</option>
                     <option value="SMP Kelas 8">SMP Kelas 8</option>
                     <option value="SMP Kelas 9">SMP Kelas 9</option>
-                    <option value="SMA">SMA</option>
-                    <option value="SMK">SMK</option>
                   </select>
                 </div>
               </div>
@@ -1409,6 +1521,30 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
                     )}
                   </div>
 
+                  {formSuccessResult.needsScriptUpdate && (
+                    <div className="p-3 rounded-lg bg-amber-950/60 border border-amber-700/70 text-[11px] text-amber-200 space-y-1.5">
+                      <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>Perbarui Script Code.gs ke Versi 3.3</span>
+                      </div>
+                      <p className="leading-relaxed">
+                        Web App Google Apps Script Anda masih memakai versi lama yang menambahkan tanda titik/nomor sebelum soal. Salin <strong>Code.gs v3.3</strong> di menu Pengaturan Web App lalu pilih <strong>Deploy &gt; Manage deployments &gt; New version</strong> agar soal tampil bersih tanpa awalan apa pun.
+                      </p>
+                      {onOpenGasSettings && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowFormModal(false);
+                            onOpenGasSettings();
+                          }}
+                          className="text-amber-300 hover:text-amber-200 underline font-semibold cursor-pointer"
+                        >
+                          Buka Pengaturan Web App Sekarang
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   <div className="pt-2 border-t border-emerald-900/40 flex flex-col sm:flex-row gap-2 justify-end">
                     <button
                       type="button"
@@ -1442,14 +1578,14 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
                     </div>
                     <ul className="list-disc list-inside space-y-1 text-slate-300 text-[11px]">
                       <li>Otomatis membuat Google Form kuis baru dengan mode nilai <strong>100%</strong>.</li>
-                      <li>Kunci jawaban dan pembahasan mendalam langsung tersimpan.</li>
+                      <li>Soal dibuat <strong>tanpa nomor soal</strong> agar rapi saat urutan soal diacak.</li>
                       <li>Disimpan di folder: <strong>v2-soalpintar.ai/{selectedPkgForForm.subject}</strong>.</li>
                     </ul>
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      URL Web App Google Apps Script (Code.gs v3.2):
+                      URL Web App Google Apps Script (Code.gs v3.3):
                     </label>
                     <input
                       type="url"
@@ -1903,6 +2039,141 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
                   className="px-4 py-2 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 rounded-xl cursor-pointer"
                 >
                   Simpan Paket Soal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: IMPOR DARI WORD / PDF */}
+      {showWordPdfModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-[#0b1324] border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl text-slate-100 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-950/70 border border-blue-800/60 text-blue-400 flex items-center justify-center shrink-0">
+                  <FileUp className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    Impor Soal dari Word / PDF
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Tempel teks soal dari dokumen Anda untuk dikonversi otomatis ke Bank Soal
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowWordPdfModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleExecuteImportWordPdf} className="space-y-4 pt-1">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Judul Paket Soal
+                  </label>
+                  <input
+                    type="text"
+                    value={importWordPdfTitle}
+                    onChange={(e) => setImportWordPdfTitle(e.target.value)}
+                    placeholder="Misal: Ulangan Harian Bangun Ruang"
+                    className="w-full text-xs bg-[#0e172a] border border-slate-800 rounded-xl px-3.5 py-2.5 text-white placeholder-slate-500 focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Jenjang
+                  </label>
+                  <select
+                    value={importWordPdfGrade}
+                    onChange={(e) => setImportWordPdfGrade(e.target.value)}
+                    className="w-full text-xs bg-[#0e172a] border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-hidden focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                  >
+                    <option value="SMP">SMP</option>
+                    <option value="SMP Kelas 7">SMP Kelas 7</option>
+                    <option value="SMP Kelas 8">SMP Kelas 8</option>
+                    <option value="SMP Kelas 9">SMP Kelas 9</option>
+                    <option value="SD">SD</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Mata Pelajaran
+                </label>
+                <input
+                  type="text"
+                  value={importWordPdfSubject}
+                  onChange={(e) => setImportWordPdfSubject(e.target.value)}
+                  placeholder="Misal: Matematika"
+                  className="w-full text-xs bg-[#0e172a] border border-slate-800 rounded-xl px-3.5 py-2.5 text-white placeholder-slate-500 focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Tempel Isi Soal Dokumen (Word / PDF)
+                  </label>
+                  <span className="text-[11px] text-slate-500">
+                    Format: 1. Soal ... A. ... B. ... Kunci: A
+                  </span>
+                </div>
+                <textarea
+                  value={importWordPdfText}
+                  onChange={(e) => setImportWordPdfText(e.target.value)}
+                  rows={9}
+                  placeholder={`1. Bangun ruang sisi lengkung yang memiliki 2 rusuk lengkung dan 3 bidang sisi adalah...
+A. Tabung
+B. Bola
+C. Kerucut
+D. Prisma
+Kunci: A
+Pembahasan: Tabung memiliki sisi alas, sisi atas (tutup), dan selimut dengan 2 rusuk lengkung.
+
+2. Rumus luas permukaan bola dengan jari-jari r adalah...
+A. 4πr²
+B. 2πr²
+C. 4/3πr³
+D. πr²
+Kunci: A
+Pembahasan: Luas permukaan bola = 4 × luas lingkaran = 4πr².`}
+                  className="w-full text-xs font-mono bg-[#0e172a] border border-slate-800 rounded-xl p-3.5 text-slate-200 placeholder-slate-600 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 leading-relaxed"
+                  required
+                />
+              </div>
+
+              <div className="bg-[#091526] border border-blue-900/40 rounded-xl p-3 text-[11px] text-blue-300/90 leading-relaxed flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>
+                  Parser otomatis akan mengenali nomor soal, opsi jawaban (A, B, C, D), kunci jawaban, dan pembahasan. Anda dapat langsung mengedit butir soal setelah diimpor.
+                </span>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowWordPdfModal(false)}
+                  className="px-4 py-2 text-xs text-slate-400 hover:text-white rounded-xl transition-colors cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Impor ke Bank Soal</span>
                 </button>
               </div>
             </form>
