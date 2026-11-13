@@ -98,7 +98,7 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
       setTokensCount(0);
     }
 
-    // 3. Fetch live student sessions count from server
+    // 3. Fetch live student sessions & rooms count from server
     try {
       const res = await fetch('/api/rooms');
       const data = await res.json();
@@ -106,7 +106,7 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
         let count = 0;
         for (const r of data.rooms) {
           const parts = r.participants ? Object.values(r.participants) : [];
-          count += parts.length;
+          count += parts.length > 0 ? parts.length : 1;
         }
         setLiveSessionsCount(count);
       }
@@ -123,12 +123,15 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
   const totalLogAndHistory =
     violations.length + liveSessionsCount + scores.length + googleFormsCount;
 
-  const callServerClear = async (scope: 'live_sessions' | 'tokens' | 'all' | 'restore') => {
+  const callServerClear = async (
+    scope: 'live_sessions' | 'tokens' | 'all' | 'restore',
+    clearRooms = false
+  ) => {
     try {
       await fetch('/api/admin/clear-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope }),
+        body: JSON.stringify({ scope, clearRooms }),
       });
     } catch {
       // Ignore offline error
@@ -200,7 +203,7 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
                 dangerLabel: 'Ya, Bersihkan Log & Histori',
                 tone: 'amber',
                 onConfirm: async () => {
-                  await callServerClear('live_sessions');
+                  await callServerClear('live_sessions', true);
                   localStorage.removeItem('soalpintar_exam_device_locks');
                   onClearLogsAndHistory();
                   showToast('Log pelanggaran, sesi live, nilai, & histori forms berhasil dibersihkan.');
@@ -239,10 +242,10 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
                 dangerLabel: 'Ya, Hapus Semua Data',
                 tone: 'rose',
                 onConfirm: async () => {
-                  await callServerClear('all');
+                  await callServerClear('all', true);
                   localStorage.removeItem('soalpintar_exam_device_locks');
-                  localStorage.removeItem('soalpintar_created_tokens_v2');
-                  localStorage.removeItem('soalpintar_manual_google_forms');
+                  localStorage.setItem('soalpintar_created_tokens_v2', '[]');
+                  localStorage.setItem('soalpintar_manual_google_forms', '[]');
                   onClearAllData();
                   showToast('Seluruh database lokal, log, histori, token, bank soal, dan cache berhasil dikosongkan.');
                 },
@@ -359,9 +362,9 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
                 dangerLabel: 'Bersihkan Sesi Live',
                 tone: 'amber',
                 onConfirm: async () => {
-                  await callServerClear('live_sessions');
+                  await callServerClear('live_sessions', true);
                   localStorage.removeItem('soalpintar_exam_device_locks');
-                  showToast('Log sesi Ujian Live & kunci perangkat sementara berhasil dibersihkan.');
+                  showToast('Log & ruang sesi Ujian Live beserta kunci perangkat berhasil dibersihkan.');
                 },
               })
             }
@@ -431,10 +434,10 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
                 dangerLabel: 'Hapus Data Token',
                 tone: 'rose',
                 onConfirm: async () => {
-                  localStorage.removeItem('soalpintar_created_tokens_v2');
+                  localStorage.setItem('soalpintar_created_tokens_v2', '[]');
                   await callServerClear('tokens');
                   onClearTokens();
-                  showToast('Data token ujian siswa berhasil dihapus.');
+                  showToast('Data token ujian siswa & ruang Ujian Live berhasil dihapus.');
                 },
               })
             }

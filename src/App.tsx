@@ -19,11 +19,14 @@ import { LoginView, AuthSession } from './components/LoginView';
 import { TeacherUsersView } from './components/TeacherUsersView';
 import { ClearDataView } from './components/ClearDataView';
 import { INITIAL_PACKAGES, INITIAL_SCORES, INITIAL_VIOLATIONS } from './data/mockBankSoal';
-import { QuestionPackage, ExamTokenConfig, StudentScoreRecord, TeacherAccount } from './types';
+import { QuestionPackage, ExamTokenConfig, StudentScoreRecord, StudentViolationLog, TeacherAccount } from './types';
 
 const MANUAL_FORMS_STORAGE_KEY = 'soalpintar_manual_google_forms';
 const AUTH_SESSION_STORAGE_KEY = 'soalpintar_auth_session';
 const REGISTERED_TEACHERS_STORAGE_KEY = 'soalpintar_registered_teachers';
+const PACKAGES_STORAGE_KEY = 'soalpintar_packages_v1';
+const SCORES_STORAGE_KEY = 'soalpintar_scores_v1';
+const VIOLATIONS_STORAGE_KEY = 'soalpintar_violations_v1';
 
 const DEFAULT_TEACHER_ACCOUNTS: TeacherAccount[] = [
   {
@@ -42,7 +45,22 @@ const DEFAULT_TEACHER_ACCOUNTS: TeacherAccount[] = [
 
 export default function App() {
   const urlParams = new URLSearchParams(window.location.search);
-  const initialTokenParam = urlParams.get('token') || 'ZJT0P4M';
+  const initialTokenParam = (() => {
+    const fromUrl = urlParams.get('token');
+    if (fromUrl) return fromUrl;
+    try {
+      const savedTokens = localStorage.getItem('soalpintar_created_tokens_v2');
+      if (savedTokens !== null) {
+        const parsed = JSON.parse(savedTokens);
+        if (Array.isArray(parsed)) {
+          return parsed[0]?.token || '';
+        }
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return 'ZJT0P4M';
+  })();
   const [isUrlStudentDirect, setIsUrlStudentDirect] = useState<boolean>(
     () => urlParams.get('mode') === 'student'
   );
@@ -114,12 +132,23 @@ export default function App() {
     localStorage.setItem('soalpintar_gas_shuffle_o', String(val));
   };
 
-  // Core Data State
-  const [packages, setPackages] = useState<QuestionPackage[]>(INITIAL_PACKAGES);
+  // Core Data State (persisted so Clear Data survives refresh)
+  const [packages, setPackages] = useState<QuestionPackage[]>(() => {
+    try {
+      const saved = localStorage.getItem(PACKAGES_STORAGE_KEY);
+      if (saved !== null) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return INITIAL_PACKAGES;
+  });
   const [manualForms, setManualForms] = useState<ManualGoogleFormEntry[]>(() => {
     try {
       const saved = localStorage.getItem(MANUAL_FORMS_STORAGE_KEY);
-      if (saved) {
+      if (saved !== null) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) return parsed;
       }
@@ -128,8 +157,54 @@ export default function App() {
     }
     return [];
   });
-  const [scores, setScores] = useState<StudentScoreRecord[]>(INITIAL_SCORES);
-  const [violations, setViolations] = useState(INITIAL_VIOLATIONS);
+  const [scores, setScores] = useState<StudentScoreRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem(SCORES_STORAGE_KEY);
+      if (saved !== null) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return INITIAL_SCORES;
+  });
+  const [violations, setViolations] = useState<StudentViolationLog[]>(() => {
+    try {
+      const saved = localStorage.getItem(VIOLATIONS_STORAGE_KEY);
+      if (saved !== null) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return INITIAL_VIOLATIONS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PACKAGES_STORAGE_KEY, JSON.stringify(packages));
+    } catch {
+      // Ignore storage error
+    }
+  }, [packages]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCORES_STORAGE_KEY, JSON.stringify(scores));
+    } catch {
+      // Ignore storage error
+    }
+  }, [scores]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIOLATIONS_STORAGE_KEY, JSON.stringify(violations));
+    } catch {
+      // Ignore storage error
+    }
+  }, [violations]);
 
   const [registeredTeachers, setRegisteredTeachers] = useState<TeacherAccount[]>(() => {
     try {
@@ -618,7 +693,7 @@ export default function App() {
               onClearTokens={() => {
                 setExamConfig((prev) => ({
                   ...prev,
-                  token: 'ZJT0P4M',
+                  token: '',
                 }));
               }}
               onClearPackages={() => setPackages([])}
@@ -647,7 +722,7 @@ export default function App() {
                 setPackages([]);
                 setExamConfig((prev) => ({
                   ...prev,
-                  token: 'ZJT0P4M',
+                  token: '',
                   googleFormUrl: '',
                   googleFormEditUrl: '',
                 }));

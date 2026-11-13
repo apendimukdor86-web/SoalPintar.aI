@@ -145,126 +145,131 @@ function findMatchingDeviceLock(
   return null;
 }
 
-// Seed initial rooms for instant testing (matching screenshot)
-const rooms: Record<string, LiveExamRoom> = {
-  'LCXEIYU': {
-    token: 'LCXEIYU',
-    quizId: 'quiz-segitiga-smp',
-    title: 'Segitiga',
-    subject: 'Segitiga',
-    grade: 'SMP',
-    totalQuestions: 10,
-    durationMinutes: 0,
-    remainingSeconds: 0,
-    maxViolations: 3,
-    waitingRoomEnabled: false,
-    isExamStarted: true,
-    googleFormUrl: '',
-    googleFormEditUrl: '',
-    driveFolderUrl: 'https://drive.google.com/drive/my-drive',
-    createdAt: Date.now() - 1000 * 60 * 30,
-    participants: {},
-  },
-  'ZJT0P4M': {
-    token: 'ZJT0P4M',
-    quizId: 'quiz-ipa-ulangan',
-    title: 'Ulangan',
-    subject: 'IPA',
-    grade: 'SMP',
-    totalQuestions: 10,
-    durationMinutes: 0,
-    remainingSeconds: 0,
-    maxViolations: 3,
-    waitingRoomEnabled: false,
-    isExamStarted: true,
-    googleFormUrl: '',
-    googleFormEditUrl: '',
-    driveFolderUrl: 'https://drive.google.com/drive/my-drive',
-    createdAt: Date.now() - 1000 * 60 * 15,
-    participants: {
-      'std-1': {
-        id: 'std-1',
-        name: 'Ahmad Raihan Pratama',
-        nisn: '0089283741',
-        kelas: 'VII-A',
-        token: 'ZJT0P4M',
-        status: 'mengerjakan',
-        startedAt: Date.now() - 1000 * 60 * 12,
-        lastPing: Date.now(),
-        violationsCount: 0,
-        violationsLog: [],
-        currentQuestionIndex: 9,
-      },
-      'std-2': {
-        id: 'std-2',
-        name: 'Siti Nur Aisyah',
-        nisn: '0089283742',
-        kelas: 'VII-A',
-        token: 'ZJT0P4M',
-        status: 'mengerjakan',
-        startedAt: Date.now() - 1000 * 60 * 12,
-        lastPing: Date.now(),
-        violationsCount: 1,
-        violationsLog: [
-          {
-            id: 'v-1',
-            timestamp: Date.now() - 1000 * 60 * 5,
-            type: 'Pindah Tab',
-            penaltySeconds: 10,
-          },
-        ],
-        currentQuestionIndex: 11,
-      },
-      'std-3': {
-        id: 'std-3',
-        name: 'Bima Satria Wijaya',
-        nisn: '0089283743',
-        kelas: 'VII-A',
-        token: 'ZJT0P4M',
-        status: 'diblokir',
-        startedAt: Date.now() - 1000 * 60 * 14,
-        lastPing: Date.now() - 1000 * 60 * 2,
-        violationsCount: 3,
-        violationsLog: [
-          { id: 'v-2', timestamp: Date.now() - 1000 * 60 * 10, type: 'Keluar Fullscreen', penaltySeconds: 10 },
-          { id: 'v-3', timestamp: Date.now() - 1000 * 60 * 6, type: 'Pindah Tab', penaltySeconds: 10 },
-          { id: 'v-4', timestamp: Date.now() - 1000 * 60 * 2, type: 'Split Screen / Resize', penaltySeconds: 10 },
-        ],
-        currentQuestionIndex: 6,
-      },
-      'std-4': {
-        id: 'std-4',
-        name: 'Dewi Lestari',
-        nisn: '0089283744',
-        kelas: 'VII-A',
-        token: 'ZJT0P4M',
-        status: 'selesai',
-        startedAt: Date.now() - 1000 * 60 * 14,
-        lastPing: Date.now() - 1000 * 60 * 1,
-        violationsCount: 0,
-        violationsLog: [],
-        score: 93,
-        totalScore: 100,
-        currentQuestionIndex: 15,
-      },
-      'std-5': {
-        id: 'std-5',
-        name: 'Dimas Anggara',
-        nisn: '0089283745',
-        kelas: 'VII-A',
-        token: 'ZJT0P4M',
-        status: 'terputus',
-        startedAt: Date.now() - 1000 * 60 * 13,
-        lastPing: Date.now() - 1000 * 180,
-        violationsCount: 1,
-        violationsLog: [
-          { id: 'v-5', timestamp: Date.now() - 1000 * 60 * 8, type: 'Pindah Tab', penaltySeconds: 10 },
-        ],
-        currentQuestionIndex: 5,
+function createInitialSeededRooms(): Record<string, LiveExamRoom> {
+  const now = Date.now();
+  return {
+    'LCXEIYU': {
+      token: 'LCXEIYU',
+      quizId: 'quiz-segitiga-smp',
+      title: 'Segitiga',
+      subject: 'Segitiga',
+      grade: 'SMP',
+      totalQuestions: 10,
+      durationMinutes: 0,
+      remainingSeconds: 0,
+      maxViolations: 3,
+      waitingRoomEnabled: false,
+      isExamStarted: true,
+      googleFormUrl: '',
+      googleFormEditUrl: '',
+      driveFolderUrl: 'https://drive.google.com/drive/my-drive',
+      createdAt: now - 1000 * 60 * 30,
+      participants: {},
+    },
+    'ZJT0P4M': {
+      token: 'ZJT0P4M',
+      quizId: 'quiz-ipa-ulangan',
+      title: 'Ulangan',
+      subject: 'IPA',
+      grade: 'SMP',
+      totalQuestions: 10,
+      durationMinutes: 0,
+      remainingSeconds: 0,
+      maxViolations: 3,
+      waitingRoomEnabled: false,
+      isExamStarted: true,
+      googleFormUrl: '',
+      googleFormEditUrl: '',
+      driveFolderUrl: 'https://drive.google.com/drive/my-drive',
+      createdAt: now - 1000 * 60 * 15,
+      participants: {
+        'std-1': {
+          id: 'std-1',
+          name: 'Ahmad Raihan Pratama',
+          nisn: '0089283741',
+          kelas: 'VII-A',
+          token: 'ZJT0P4M',
+          status: 'mengerjakan',
+          startedAt: now - 1000 * 60 * 12,
+          lastPing: now,
+          violationsCount: 0,
+          violationsLog: [],
+          currentQuestionIndex: 9,
+        },
+        'std-2': {
+          id: 'std-2',
+          name: 'Siti Nur Aisyah',
+          nisn: '0089283742',
+          kelas: 'VII-A',
+          token: 'ZJT0P4M',
+          status: 'mengerjakan',
+          startedAt: now - 1000 * 60 * 12,
+          lastPing: now,
+          violationsCount: 1,
+          violationsLog: [
+            {
+              id: 'v-1',
+              timestamp: now - 1000 * 60 * 5,
+              type: 'Pindah Tab',
+              penaltySeconds: 10,
+            },
+          ],
+          currentQuestionIndex: 11,
+        },
+        'std-3': {
+          id: 'std-3',
+          name: 'Bima Satria Wijaya',
+          nisn: '0089283743',
+          kelas: 'VII-A',
+          token: 'ZJT0P4M',
+          status: 'diblokir',
+          startedAt: now - 1000 * 60 * 14,
+          lastPing: now - 1000 * 60 * 2,
+          violationsCount: 3,
+          violationsLog: [
+            { id: 'v-2', timestamp: now - 1000 * 60 * 10, type: 'Keluar Fullscreen', penaltySeconds: 10 },
+            { id: 'v-3', timestamp: now - 1000 * 60 * 6, type: 'Pindah Tab', penaltySeconds: 10 },
+            { id: 'v-4', timestamp: now - 1000 * 60 * 2, type: 'Split Screen / Resize', penaltySeconds: 10 },
+          ],
+          currentQuestionIndex: 6,
+        },
+        'std-4': {
+          id: 'std-4',
+          name: 'Dewi Lestari',
+          nisn: '0089283744',
+          kelas: 'VII-A',
+          token: 'ZJT0P4M',
+          status: 'selesai',
+          startedAt: now - 1000 * 60 * 14,
+          lastPing: now - 1000 * 60 * 1,
+          violationsCount: 0,
+          violationsLog: [],
+          score: 93,
+          totalScore: 100,
+          currentQuestionIndex: 15,
+        },
+        'std-5': {
+          id: 'std-5',
+          name: 'Dimas Anggara',
+          nisn: '0089283745',
+          kelas: 'VII-A',
+          token: 'ZJT0P4M',
+          status: 'terputus',
+          startedAt: now - 1000 * 60 * 13,
+          lastPing: now - 1000 * 180,
+          violationsCount: 1,
+          violationsLog: [
+            { id: 'v-5', timestamp: now - 1000 * 60 * 8, type: 'Pindah Tab', penaltySeconds: 10 },
+          ],
+          currentQuestionIndex: 5,
+        },
       },
     },
-  },
-};
+  };
+}
+
+// Seed initial rooms for instant testing
+const rooms: Record<string, LiveExamRoom> = createInitialSeededRooms();
 
 // Background timer tick down
 setInterval(() => {
@@ -1081,37 +1086,61 @@ app.get('/api/rooms', (_req: Request, res: Response) => {
   return res.json({ success: true, rooms: Object.values(rooms) });
 });
 
+// API 7b: Delete a single Live Exam Room / Token
+app.delete('/api/rooms/:token', (req: Request, res: Response) => {
+  const token = req.params.token.toUpperCase();
+  if (rooms[token]) {
+    delete rooms[token];
+  }
+  for (let i = completedFormLocks.length - 1; i >= 0; i--) {
+    if (completedFormLocks[i].token.toUpperCase() === token) {
+      completedFormLocks.splice(i, 1);
+    }
+  }
+  return res.json({ success: true, deletedToken: token });
+});
+
 // API 8: Clear Data & Reset Logs / Live Sessions / Rooms
 app.post('/api/admin/clear-data', (req: Request, res: Response) => {
   const scope = String(req.body?.scope || 'live_sessions');
+  const clearRooms = Boolean(req.body?.clearRooms);
+  const activeTokens = Array.isArray(req.body?.activeTokens)
+    ? new Set(req.body.activeTokens.map((t: unknown) => String(t).toUpperCase()))
+    : null;
 
-  if (scope === 'live_sessions' || scope === 'all' || scope === 'restore') {
+  if (scope === 'live_sessions') {
     for (const tokenKey of Object.keys(rooms)) {
-      rooms[tokenKey].participants = {};
-      rooms[tokenKey].completedLocks = [];
-      rooms[tokenKey].unlockedLocks = [];
-      rooms[tokenKey].lastBroadcastAlert = null;
+      if (clearRooms || (activeTokens && !activeTokens.has(tokenKey))) {
+        delete rooms[tokenKey];
+      } else {
+        rooms[tokenKey].participants = {};
+        rooms[tokenKey].completedLocks = [];
+        rooms[tokenKey].unlockedLocks = [];
+        rooms[tokenKey].lastBroadcastAlert = null;
+      }
     }
     completedFormLocks.splice(0, completedFormLocks.length);
   }
 
   if (scope === 'tokens' || scope === 'all') {
     for (const tokenKey of Object.keys(rooms)) {
-      if (tokenKey !== 'LCXEIYU' && tokenKey !== 'ZJT0P4M') {
-        delete rooms[tokenKey];
-      }
+      delete rooms[tokenKey];
     }
+    completedFormLocks.splice(0, completedFormLocks.length);
   }
 
   if (scope === 'restore') {
     for (const tokenKey of Object.keys(rooms)) {
-      if (tokenKey !== 'LCXEIYU' && tokenKey !== 'ZJT0P4M') {
-        delete rooms[tokenKey];
-      }
+      delete rooms[tokenKey];
+    }
+    completedFormLocks.splice(0, completedFormLocks.length);
+    const seeded = createInitialSeededRooms();
+    for (const [k, v] of Object.entries(seeded)) {
+      rooms[k] = v;
     }
   }
 
-  return res.json({ success: true, scope });
+  return res.json({ success: true, scope, roomsCount: Object.keys(rooms).length });
 });
 
 // ==========================================================

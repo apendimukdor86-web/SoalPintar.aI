@@ -81,12 +81,13 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           title="Klik untuk salin token ujian"
         >
           <span className="text-slate-400 font-normal font-sans text-[11px]">Token:</span>
-          <span className="text-emerald-600 dark:text-emerald-400">{tokenCode}</span>
-          {copied ? (
-            <Check className="w-3.5 h-3.5 text-emerald-500 ml-0.5" />
-          ) : (
-            <Copy className="w-3.5 h-3.5 text-slate-400 ml-0.5" />
-          )}
+          <span className="text-emerald-600 dark:text-emerald-400">{tokenCode || '—'}</span>
+          {tokenCode &&
+            (copied ? (
+              <Check className="w-3.5 h-3.5 text-emerald-500 ml-0.5" />
+            ) : (
+              <Copy className="w-3.5 h-3.5 text-slate-400 ml-0.5" />
+            ))}
         </button>
 
         {/* Projector Button */}

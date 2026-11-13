@@ -17,6 +17,7 @@ import {
   X,
   Maximize2,
   ExternalLink,
+  Trash2,
 } from 'lucide-react';
 import { StudentExamSession, ExamTokenConfig, QuestionPackage } from '../types';
 import { generateQrCodeDataUrl } from '../utils/qr';
@@ -54,43 +55,8 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   onOpenStudentSimulation,
   packages = [],
 }) => {
-  // Active rooms list state
-  const [rooms, setRooms] = useState<LiveRoomData[]>([
-    {
-      token: 'LCXEIYU',
-      quizId: 'quiz-segitiga-smp',
-      title: 'Segitiga',
-      subject: 'Segitiga',
-      grade: 'SMP',
-      totalQuestions: 10,
-      durationMinutes: 0,
-      remainingSeconds: 0,
-      maxViolations: 3,
-      waitingRoomEnabled: false,
-      isExamStarted: true,
-      googleFormUrl: '',
-      driveFolderUrl: '',
-      participants: {},
-      activeCount: 0,
-    },
-    {
-      token: 'ZJT0P4M',
-      quizId: 'quiz-ipa-ulangan',
-      title: 'Ulangan',
-      subject: 'IPA',
-      grade: 'SMP',
-      totalQuestions: 10,
-      durationMinutes: 0,
-      remainingSeconds: 0,
-      maxViolations: 3,
-      waitingRoomEnabled: false,
-      isExamStarted: true,
-      googleFormUrl: '',
-      driveFolderUrl: '',
-      participants: {},
-      activeCount: 0,
-    },
-  ]);
+  // Active rooms list state (synced strictly from backend /api/rooms)
+  const [rooms, setRooms] = useState<LiveRoomData[]>([]);
 
   // Selected room for detailed real-time monitoring (null = room grid overview)
   const [selectedRoomToken, setSelectedRoomToken] = useState<string | null>(null);
@@ -126,7 +92,7 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
       const res = await fetch('/api/rooms');
       const data = await res.json();
       if (data.success && Array.isArray(data.rooms)) {
-        const mapped = data.rooms.map((r: any) => {
+        const mapped: LiveRoomData[] = data.rooms.map((r: any) => {
           const parts = r.participants ? Object.values(r.participants) : [];
           const active = parts.filter((p: any) => p.status === 'mengerjakan').length;
           return {
@@ -135,46 +101,32 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
           };
         });
 
-        // Ensure LCXEIYU and ZJT0P4M are visible if not already returned
-        const hasLcx = mapped.some((m: any) => m.token === 'LCXEIYU');
-        const hasZjt = mapped.some((m: any) => m.token === 'ZJT0P4M');
-
-        const initialList: LiveRoomData[] = [...mapped];
-        if (!hasLcx) {
-          initialList.unshift({
-            token: 'LCXEIYU',
-            title: 'Segitiga',
-            subject: 'Segitiga',
-            grade: 'SMP',
-            totalQuestions: 10,
-            durationMinutes: 0,
-            remainingSeconds: 0,
-            maxViolations: 3,
-            isExamStarted: true,
-            participants: {},
-            activeCount: 0,
-          });
+        setRooms(mapped);
+        if (selectedRoomToken && !mapped.some((m) => m.token === selectedRoomToken)) {
+          setSelectedRoomToken(null);
+          setParticipants([]);
         }
-        if (!hasZjt) {
-          initialList.push({
-            token: 'ZJT0P4M',
-            title: 'Ulangan',
-            subject: 'IPA',
-            grade: 'SMP',
-            totalQuestions: 10,
-            durationMinutes: 0,
-            remainingSeconds: 0,
-            maxViolations: 3,
-            isExamStarted: true,
-            participants: {},
-            activeCount: 0,
-          });
-        }
-
-        setRooms(initialList);
       }
     } catch (err) {
       console.error('Error fetching rooms:', err);
+    }
+  };
+
+  // Delete a specific live room
+  const handleDeleteRoom = async (token: string) => {
+    try {
+      await fetch(`/api/rooms/${encodeURIComponent(token)}`, { method: 'DELETE' });
+      setRooms((prev) => prev.filter((r) => r.token !== token));
+      if (selectedRoomToken === token) {
+        setSelectedRoomToken(null);
+        setParticipants([]);
+      }
+      if (selectedQrRoom?.token === token) {
+        setSelectedQrRoom(null);
+      }
+      showToast(`Sesi ruang ujian "${token}" berhasil dihapus dari Ujian Live.`);
+    } catch (err) {
+      console.error('Error deleting room:', err);
     }
   };
 
@@ -182,10 +134,18 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   const fetchActiveRoomDetail = async (token: string) => {
     try {
       const res = await fetch(`/api/rooms/${token}`);
+      if (!res.ok) {
+        setParticipants([]);
+        setSelectedRoomToken(null);
+        return;
+      }
       const data = await res.json();
       if (data.success && data.room) {
         setParticipants(Object.values(data.room.participants || {}));
         setRemainingSec(data.room.remainingSeconds || 0);
+      } else {
+        setParticipants([]);
+        setSelectedRoomToken(null);
       }
     } catch (err) {
       console.error(err);
@@ -339,72 +299,97 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
             </div>
           </div>
 
-          {/* Grid of Live Exam Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {rooms.map((room) => {
-              const activeCount = room.activeCount || 0;
-              const durationLabel =
-                room.durationMinutes && room.durationMinutes > 0
-                  ? `${room.durationMinutes} menit`
-                  : 'tanpa batas waktu';
+          {/* Grid of Live Exam Cards or Empty State */}
+          {rooms.length === 0 ? (
+            <div className="bg-[#0b1324] border border-slate-800/80 rounded-2xl p-10 text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mx-auto text-slate-500">
+                <Radio className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-white">
+                Belum Ada Ruang Ujian Live Aktif
+              </h3>
+              <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                Semua sesi Ujian Live sudah dibersihkan atau belum ada token yang dibuat. Buat token baru di menu <strong>Token Siswa</strong> untuk memulai sesi ujian live.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {rooms.map((room) => {
+                const activeCount = room.activeCount || 0;
+                const durationLabel =
+                  room.durationMinutes && room.durationMinutes > 0
+                    ? `${room.durationMinutes} menit`
+                    : 'tanpa batas waktu';
 
-              return (
-                <div
-                  key={room.token}
-                  className="bg-[#0b1324] border border-slate-800/80 rounded-2xl p-6 shadow-sm flex flex-col justify-between hover:border-slate-700/80 transition-all"
-                >
-                  <div>
-                    {/* Token Pill Badge */}
-                    <span className="inline-block px-3 py-1 bg-[#18213e] border border-indigo-800/40 text-indigo-300 font-mono font-bold text-xs rounded-lg tracking-wider">
-                      {room.token}
-                    </span>
+                return (
+                  <div
+                    key={room.token}
+                    className="bg-[#0b1324] border border-slate-800/80 rounded-2xl p-6 shadow-sm flex flex-col justify-between hover:border-slate-700/80 transition-all"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        {/* Token Pill Badge */}
+                        <span className="inline-block px-3 py-1 bg-[#18213e] border border-indigo-800/40 text-indigo-300 font-mono font-bold text-xs rounded-lg tracking-wider">
+                          {room.token}
+                        </span>
 
-                    {/* Quiz Title */}
-                    <h3 className="text-lg font-bold text-white mt-3.5 leading-snug">
-                      {room.title}
-                    </h3>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRoom(room.token)}
+                          title="Hapus Ruang Ujian Live ini"
+                          className="p-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-rose-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
 
-                    {/* Subject / Topic */}
-                    <p className="text-xs text-slate-400 mt-1">
-                      {room.subject || room.title}
-                    </p>
+                      {/* Quiz Title */}
+                      <h3 className="text-lg font-bold text-white mt-3.5 leading-snug">
+                        {room.title}
+                      </h3>
 
-                    {/* Meta info: X mengerjakan · tanpa batas waktu */}
-                    <p className="text-xs text-slate-400 mt-3.5 flex items-center gap-1.5">
-                      <span>{activeCount} mengerjakan</span>
-                      <span>·</span>
-                      <span>{durationLabel}</span>
-                    </p>
+                      {/* Subject / Topic */}
+                      <p className="text-xs text-slate-400 mt-1">
+                        {room.subject || room.title}
+                      </p>
+
+                      {/* Meta info: X mengerjakan · tanpa batas waktu */}
+                      <p className="text-xs text-slate-400 mt-3.5 flex items-center gap-1.5">
+                        <span>{activeCount} mengerjakan</span>
+                        <span>·</span>
+                        <span>{durationLabel}</span>
+                      </p>
+                    </div>
+
+                    {/* Two Action Buttons: Layar QR & Pantau */}
+                    <div className="mt-6 flex items-center gap-3">
+                      {/* Layar QR */}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenQrModal(room)}
+                        className="flex-1 bg-[#1a233d] hover:bg-[#233054] border border-indigo-900/50 text-indigo-200 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
+                        title="Tampilkan Kode QR Ujian di Layar Proyektor"
+                      >
+                        <QrCode className="w-4 h-4 text-indigo-300" />
+                        <span>Layar QR</span>
+                      </button>
+
+                      {/* Pantau */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRoomToken(room.token)}
+                        className="flex-1 bg-[#0b2824] hover:bg-[#103a34] border border-emerald-900/50 text-emerald-300 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
+                        title="Buka Pemantauan Real-Time Ruang Ujian Ini"
+                      >
+                        <Radio className="w-4 h-4 text-emerald-400" />
+                        <span>Pantau</span>
+                      </button>
+                    </div>
                   </div>
-
-                  {/* Two Action Buttons: Layar QR & Pantau */}
-                  <div className="mt-6 flex items-center gap-3">
-                    {/* Layar QR */}
-                    <button
-                      type="button"
-                      onClick={() => handleOpenQrModal(room)}
-                      className="flex-1 bg-[#1a233d] hover:bg-[#233054] border border-indigo-900/50 text-indigo-200 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
-                      title="Tampilkan Kode QR Ujian di Layar Proyektor"
-                    >
-                      <QrCode className="w-4 h-4 text-indigo-300" />
-                      <span>Layar QR</span>
-                    </button>
-
-                    {/* Pantau */}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedRoomToken(room.token)}
-                      className="flex-1 bg-[#0b2824] hover:bg-[#103a34] border border-emerald-900/50 text-emerald-300 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
-                      title="Buka Pemantauan Real-Time Ruang Ujian Ini"
-                    >
-                      <Radio className="w-4 h-4 text-emerald-400" />
-                      <span>Pantau</span>
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       ) : (
         /* =========================================================================

@@ -148,9 +148,9 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
   const [tokens, setTokens] = useState<ManagedTokenEntry[]>(() => {
     try {
       const saved = localStorage.getItem(TOKEN_LIST_STORAGE_KEY);
-      if (saved) {
+      if (saved !== null) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
+        if (Array.isArray(parsed)) {
           return parsed;
         }
       }
@@ -394,9 +394,24 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
     showToast(`Token "${updated.token}" berhasil diperbarui.`);
   };
 
-  const handleDeleteToken = (code: string) => {
-    setTokens((prev) => prev.filter((t) => t.token !== code));
-    showToast(`Token "${code}" dihapus dari daftar.`);
+  const handleDeleteToken = async (code: string) => {
+    const remaining = tokens.filter((t) => t.token !== code);
+    setTokens(remaining);
+
+    if (currentConfig.token === code) {
+      onUpdateConfig({
+        ...currentConfig,
+        token: remaining[0]?.token || '',
+      });
+    }
+
+    try {
+      await fetch(`/api/rooms/${encodeURIComponent(code)}`, { method: 'DELETE' });
+    } catch {
+      // Ignore offline error
+    }
+
+    showToast(`Token "${code}" dan ruang Ujian Live terkait berhasil dihapus.`);
   };
 
   const handleWebTokenSubmit = async (e: React.FormEvent) => {
