@@ -176,7 +176,18 @@ export function getLocalExamLocks(): ExamDeviceLock[] {
     const raw = localStorage.getItem(COMPLETED_LOCKS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+      .map((item) => ({
+        token: String(item.token || '').trim().toUpperCase(),
+        googleFormUrl: typeof item.googleFormUrl === 'string' ? item.googleFormUrl : '',
+        deviceId: String(item.deviceId || '').trim(),
+        nisn: String(item.nisn || '').trim(),
+        studentName: String(item.studentName || 'Siswa CBT').trim(),
+        completedAt: Number(item.completedAt) || 0,
+      }))
+      .filter((item) => Boolean(item.token || item.googleFormUrl));
   } catch {
     return [];
   }
@@ -185,18 +196,21 @@ export function getLocalExamLocks(): ExamDeviceLock[] {
 export function saveLocalExamLock(lock: ExamDeviceLock): void {
   try {
     const existing = getLocalExamLocks();
-    const normToken = lock.token.trim().toUpperCase();
+    const normToken = String(lock.token || '').trim().toUpperCase();
     const normForm = normalizeExamLinkKey(lock.googleFormUrl);
+    const normNisn = String(lock.nisn || '').trim().toLowerCase();
     const filtered = existing.filter((item) => {
       const sameToken = item.token.toUpperCase() === normToken;
       const sameDevice = item.deviceId === lock.deviceId;
-      const sameNisn =
-        lock.nisn && item.nisn.trim().toLowerCase() === lock.nisn.trim().toLowerCase();
+      const sameNisn = Boolean(normNisn && normNisn !== '-' && item.nisn.trim().toLowerCase() === normNisn);
       return !(sameToken && (sameDevice || sameNisn));
     });
     filtered.unshift({
       ...lock,
       token: normToken,
+      deviceId: String(lock.deviceId || '').trim(),
+      nisn: String(lock.nisn || '').trim(),
+      studentName: String(lock.studentName || 'Siswa CBT').trim(),
       googleFormUrl: normForm || lock.googleFormUrl,
     });
     localStorage.setItem(COMPLETED_LOCKS_STORAGE_KEY, JSON.stringify(filtered));
@@ -212,19 +226,19 @@ export function findLocalExamLock(params: {
   nisn?: string;
 }): ExamDeviceLock | null {
   const locks = getLocalExamLocks();
-  const normToken = (params.token || '').trim().toUpperCase();
+  const normToken = String(params.token || '').trim().toUpperCase();
   const normForm = normalizeExamLinkKey(params.googleFormUrl);
-  const normNisn = (params.nisn || '').trim().toLowerCase();
+  const normNisn = String(params.nisn || '').trim().toLowerCase();
 
   for (const item of locks) {
-    const sameToken = normToken && item.token.toUpperCase() === normToken;
+    const sameToken = Boolean(normToken && item.token.toUpperCase() === normToken);
     const itemForm = normalizeExamLinkKey(item.googleFormUrl);
     const sameForm = Boolean(normForm && itemForm && itemForm === normForm);
 
     if (!sameToken && !sameForm) continue;
 
     const sameDevice = Boolean(params.deviceId && item.deviceId === params.deviceId);
-    const sameNisn = Boolean(normNisn && item.nisn.trim().toLowerCase() === normNisn);
+    const sameNisn = Boolean(normNisn && normNisn !== '-' && item.nisn.trim().toLowerCase() === normNisn);
 
     if (sameDevice || sameNisn) {
       return item;
@@ -240,11 +254,11 @@ export function clearLocalExamLock(params: {
 }): void {
   try {
     const locks = getLocalExamLocks();
-    const normToken = (params.token || '').trim().toUpperCase();
+    const normToken = String(params.token || '').trim().toUpperCase();
     const normForm = normalizeExamLinkKey(params.googleFormUrl);
 
     const remaining = locks.filter((item) => {
-      const sameToken = normToken && item.token.toUpperCase() === normToken;
+      const sameToken = Boolean(normToken && item.token.toUpperCase() === normToken);
       const itemForm = normalizeExamLinkKey(item.googleFormUrl);
       const sameForm = Boolean(normForm && itemForm && itemForm === normForm);
       if (!sameToken && !sameForm) return true;

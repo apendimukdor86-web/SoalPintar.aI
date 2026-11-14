@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ShieldAlert, ShieldCheck, Maximize2, AlertTriangle, Clock, CheckCircle2, ArrowLeft, CheckSquare, FileText, Search, HelpCircle, Cloud, LogOut, UserCheck, Monitor, Smartphone } from 'lucide-react';
-import { ExamTokenConfig, QuestionPackage } from '../types';
+import { ExamTokenConfig, QuestionPackage, StudentScoreRecord, StudentViolationLog } from '../types';
 import {
   getSyncDeviceId,
   getOrCreateDeviceId,
@@ -21,7 +21,21 @@ interface SecureExamPlayerProps {
   initialStudentKelas?: string;
   isTeacherPreview?: boolean;
   onLogout?: () => void;
+  onRecordScore?: (record: StudentScoreRecord) => void;
+  onRecordViolation?: (log: StudentViolationLog) => void;
 }
+
+const parseJsonSafe = async (res: Response): Promise<any | null> => {
+  try {
+    const ct = res.headers.get('content-type') || '';
+    const text = await res.text();
+    if (!text) return null;
+    if (!ct.includes('application/json') && text.trim().startsWith('<')) return null;
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
 
 const normalizeGoogleFormEmbedUrl = (rawUrl?: string): string | null => {
   if (!rawUrl || typeof rawUrl !== 'string') return null;
@@ -66,6 +80,8 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
   initialStudentKelas = 'VII-A',
   isTeacherPreview = false,
   onLogout,
+  onRecordScore,
+  onRecordViolation,
 }) => {
   // Student Auth State
   const [token, setToken] = useState(initialToken.toUpperCase());
@@ -75,7 +91,14 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
   const [hasStarted, setHasStarted] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExamCompleted, setIsExamCompleted] = useState(false);
-  const [examResult, setExamResult] = useState<{ score: number; maxScore: number; percentage: number } | null>(null);
+  const [examResult, setExamResult] = useState<{
+    score: number;
+    maxScore: number;
+    percentage: number;
+    isGoogleFormSubmission?: boolean;
+  } | null>(null);
+  const [roomStatusError, setRoomStatusError] = useState<'not_found' | 'paused' | 'expired' | null>(null);
+  const [roomStatusMessage, setRoomStatusMessage] = useState<string | null>(null);
 
   // Automatic Device ID Detection & Lock State
   const [deviceId, setDeviceId] = useState<string>(() => getSyncDeviceId());
@@ -154,11 +177,23 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
 
   // Fetch Room on token change
   useEffect(() => {
+    const cleanToken = String(token || '').trim().toUpperCase();
+    if (!cleanToken) {
+      setRoom(null);
+      return;
+    }
+
+    let cancelled = false;
     const fetchRoom = async () => {
       try {
-        const res = await fetch(`/api/rooms/${token}`);
-        const data = await res.json();
-        if (data.success && data.room) {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}`);
+        if (!res.ok) {
+          if (!cancelled) setRoom(null);
+          return;
+        }
+        const data = await parseJsonSafe(res);
+        if (cancelled) return;
+        if (data?.success && data.room) {
           setRoom(data.room);
           if (data.room.durationMinutes > 0 && data.room.remainingSeconds > 0) {
             setRemainingSec(data.room.remainingSeconds);
@@ -172,7 +207,10 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
         console.error(err);
       }
     };
-    if (token) fetchRoom();
+    fetchRoom();
+    return () => {
+      cancelled = true;
+    };
   }, [token, fallbackExamConfig?.remainingSeconds]);
 
   // Smooth 1-second local countdown timer while exam is active
@@ -225,6 +263,7 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
       });
     }
 
+    const cleanToken = String(token || '').trim().toUpperCase();
     let cancelled = false;
     const checkServerDevice = async () => {
       try {
@@ -234,11 +273,12 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
           googleFormUrl: rawFormUrl,
           localCompletedAt: localLock ? String(localLock.completedAt || 0) : '0',
         });
-        const res = await fetch(`/api/rooms/${encodeURIComponent(token)}/check-device?${params.toString()}`);
-        const data = await res.json();
-        if (cancelled) return;
+        const res = await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}/check-device?${params.toString()}`);
+        if (!res.ok) return;
+        const data = await parseJsonSafe(res);
+        if (cancelled || !data) return;
         if (data?.unlockedByTeacher) {
-          clearLocalExamLock({ token, googleFormUrl: rawFormUrl, deviceId });
+          clearLocalExamLock({ token: cleanToken, googleFormUrl: rawFormUrl, deviceId });
           setAlreadyCompletedLock(null);
         } else if (data?.success && data.locked) {
           setAlreadyCompletedLock({
@@ -252,7 +292,7 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
         // Ignore offline check error
       }
     };
-    if (token && deviceId) {
+    if (cleanToken && deviceId) {
       checkServerDevice();
     }
     return () => {
@@ -285,8 +325,11 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
       setIsPermanentlyBlocked(true);
     }
 
+    const cleanToken = String(token || '').trim().toUpperCase();
+    if (!cleanToken) return;
+
     try {
-      await fetch(`/api/rooms/${token}/student-sync`, {
+      await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}/student-sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -373,11 +416,12 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
 
   // Periodic Heartbeat Sync with Teacher Server
   useEffect(() => {
-    if (!hasStarted || isExamCompleted) return;
+    const cleanToken = String(token || '').trim().toUpperCase();
+    if (!hasStarted || isExamCompleted || !cleanToken) return;
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/rooms/${token}/student-sync`, {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}/student-sync`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -388,10 +432,11 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
             currentQuestionIndex: currentQIndex + 1,
           }),
         });
-        const data = await res.json();
-        if (data.success) {
+        if (!res.ok) return;
+        const data = await parseJsonSafe(res);
+        if (data?.success) {
           if (data.roomRemainingSeconds !== undefined) {
-            setRemainingSec(data.roomRemainingSeconds);
+            setRemainingSec(Math.max(0, Number(data.roomRemainingSeconds) || 0));
           }
           if (data.warningMessage) {
             setIncomingTeacherWarning(data.warningMessage);
@@ -421,17 +466,44 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
   const handleStartExam = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
+    const cleanToken = String(token || '').trim().toUpperCase();
+    if (!cleanToken) {
+      setLoginError('Kode Token Ujian wajib diisi.');
+      return;
+    }
     if (!studentName.trim() || !studentNisn.trim()) {
       setLoginError('Harap lengkapi Nama Lengkap dan NISN terlebih dahulu.');
       return;
     }
 
+    let resolvedRoom = room;
+    if (!isTeacherPreview) {
+      try {
+        const roomRes = await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}`);
+        if (!roomRes.ok) {
+          const fallbackToken = String(fallbackExamConfig?.token || '').trim().toUpperCase();
+          if (!fallbackToken || fallbackToken !== cleanToken) {
+            setLoginError(`Kode token "${cleanToken}" tidak ditemukan atau sudah dihapus guru.`);
+            return;
+          }
+        } else {
+          const roomData = await parseJsonSafe(roomRes);
+          if (roomData?.success && roomData.room) {
+            resolvedRoom = roomData.room;
+            setRoom(roomData.room);
+          }
+        }
+      } catch {
+        // Proceed if server check unreachable transiently
+      }
+    }
+
     const rawFormUrl =
-      room?.googleFormUrl || fallbackExamConfig?.googleFormUrl || activePackage?.googleFormUrl || '';
+      resolvedRoom?.googleFormUrl || fallbackExamConfig?.googleFormUrl || activePackage?.googleFormUrl || '';
 
     if (!isTeacherPreview) {
       const localLock = findLocalExamLock({
-        token,
+        token: cleanToken,
         googleFormUrl: rawFormUrl,
         deviceId,
         nisn: studentNisn,
@@ -451,15 +523,17 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
           googleFormUrl: rawFormUrl,
         });
         const checkRes = await fetch(
-          `/api/rooms/${encodeURIComponent(token)}/check-device?${params.toString()}`
+          `/api/rooms/${encodeURIComponent(cleanToken)}/check-device?${params.toString()}`
         );
-        const checkData = await checkRes.json();
-        if (checkData?.success && checkData.locked) {
-          setAlreadyCompletedLock({
-            deviceId: checkData.lockInfo?.deviceId || deviceId,
-            studentName: checkData.lockInfo?.studentName,
-          });
-          return;
+        if (checkRes.ok) {
+          const checkData = await parseJsonSafe(checkRes);
+          if (checkData?.success && checkData.locked) {
+            setAlreadyCompletedLock({
+              deviceId: checkData.lockInfo?.deviceId || deviceId,
+              studentName: checkData.lockInfo?.studentName,
+            });
+            return;
+          }
         }
       } catch {
         // Proceed if server check unavailable
@@ -467,7 +541,7 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
     }
 
     // Check waiting room
-    if (room?.waitingRoomEnabled && !room.isExamStarted) {
+    if (resolvedRoom?.waitingRoomEnabled && !resolvedRoom.isExamStarted) {
       setIsWaitingRoom(true);
     }
 
@@ -480,6 +554,7 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
       console.warn('Fullscreen request bypassed or denied:', err);
     }
 
+    setToken(cleanToken);
     setFormAbsen(studentNisn.trim());
     setFormNama(studentName.trim());
     setFormKelas(studentKelas.trim());
@@ -489,7 +564,7 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
 
     // Initial sync with Device ID
     try {
-      const syncRes = await fetch(`/api/rooms/${token}/student-sync`, {
+      const syncRes = await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}/student-sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -501,18 +576,20 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
           deviceType,
           googleFormUrl: rawFormUrl,
           bypassDeviceLock: isTeacherPreview,
-          status: room?.waitingRoomEnabled && !room?.isExamStarted ? 'ruang_tunggu' : 'mengerjakan',
+          status: resolvedRoom?.waitingRoomEnabled && !resolvedRoom?.isExamStarted ? 'ruang_tunggu' : 'mengerjakan',
         }),
       });
-      const syncData = await syncRes.json();
-      if (syncData?.alreadyCompleted && !isTeacherPreview) {
-        setHasStarted(false);
-        setAlreadyCompletedLock({
-          deviceId: syncData.lockInfo?.deviceId || deviceId,
-          studentName: syncData.lockInfo?.studentName,
-        });
-        if (document.fullscreenElement) {
-          document.exitFullscreen().catch(() => {});
+      if (syncRes.ok) {
+        const syncData = await parseJsonSafe(syncRes);
+        if (syncData?.alreadyCompleted && !isTeacherPreview) {
+          setHasStarted(false);
+          setAlreadyCompletedLock({
+            deviceId: syncData.lockInfo?.deviceId || deviceId,
+            studentName: syncData.lockInfo?.studentName,
+          });
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+          }
         }
       }
     } catch {
@@ -545,21 +622,24 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
     let earnedPoints = 0;
 
     questions.forEach((q) => {
-      const qPts = q.points || 10;
+      const qPts = Number(q.points) || 10;
       totalPoints += qPts;
-      if (answers[q.number] && answers[q.number].trim().toUpperCase() === q.correctAnswer.trim().toUpperCase()) {
+      const studentAns = String(answers[q.number] || '').trim().toUpperCase();
+      const expectedAns = String(q.correctAnswer || '').trim().toUpperCase();
+      if (studentAns && expectedAns && studentAns === expectedAns) {
         earnedPoints += qPts;
       }
     });
 
     const calculatedPercentage = totalPoints > 0 ? Math.round((earnedPoints / totalPoints) * 100) : 80;
 
+    const cleanToken = String(token || '').trim().toUpperCase();
     const rawFormUrl =
       room?.googleFormUrl || fallbackExamConfig?.googleFormUrl || activePackage?.googleFormUrl || '';
 
-    if (!isTeacherPreview) {
+    if (!isTeacherPreview && cleanToken) {
       saveLocalExamLock({
-        token,
+        token: cleanToken,
         googleFormUrl: rawFormUrl,
         deviceId,
         nisn: studentNisn.trim() || '-',
@@ -568,26 +648,28 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
       });
     }
 
-    try {
-      await fetch(`/api/rooms/${token}/student-sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentId: studentIdRef.current,
-          name: studentName,
-          nisn: studentNisn,
-          kelas: studentKelas,
-          deviceId,
-          deviceType,
-          googleFormUrl: rawFormUrl,
-          bypassDeviceLock: isTeacherPreview,
-          status: 'selesai',
-          score: earnedPoints,
-          totalScore: totalPoints,
-        }),
-      });
-    } catch (e) {
-      console.error(e);
+    if (cleanToken) {
+      try {
+        await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}/student-sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            studentId: studentIdRef.current,
+            name: studentName,
+            nisn: studentNisn,
+            kelas: studentKelas,
+            deviceId,
+            deviceType,
+            googleFormUrl: rawFormUrl,
+            bypassDeviceLock: isTeacherPreview,
+            status: 'selesai',
+            score: earnedPoints,
+            totalScore: totalPoints,
+          }),
+        });
+      } catch (e) {
+        console.error(e);
+      }
     }
 
     setExamResult({
@@ -842,13 +924,34 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
           </div>
 
           <div className="p-5 bg-slate-950/80 rounded-xl border border-slate-800 space-y-3">
-            <div className="text-xs text-slate-400 uppercase font-semibold">Perolehan Nilai Kuis</div>
-            <div className="text-4xl font-extrabold font-mono text-emerald-400">
-              {examResult.score} <span className="text-base text-slate-500">/ {examResult.maxScore}</span>
-            </div>
-            <div className="text-xs text-slate-300 font-medium">
-              Skor Persentase: {examResult.percentage}% · Status: {examResult.percentage >= 75 ? 'Tuntas (KKTP Tercapai)' : 'Perlu Remedial'}
-            </div>
+            {examResult.isGoogleFormSubmission ? (
+              <>
+                <div className="text-xs text-slate-400 uppercase font-semibold">Sesi Google Form Selesai</div>
+                <div className="text-sm text-emerald-400 font-semibold">
+                  Formulir jawaban Anda telah dikirimkan.
+                </div>
+                <div className="text-xs text-slate-400 leading-relaxed">
+                  Nilai ujian direkap oleh sistem Google Forms dan dapat ditinjau oleh guru melalui menu Rekap Nilai.
+                </div>
+              </>
+            ) : examResult.maxScore === 0 ? (
+              <>
+                <div className="text-xs text-slate-400 uppercase font-semibold">Sesi Ujian Selesai</div>
+                <div className="text-sm text-slate-300 font-medium">
+                  Belum ada butir soal bernilai pada paket ini.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-xs text-slate-400 uppercase font-semibold">Perolehan Nilai Kuis</div>
+                <div className="text-4xl font-extrabold font-mono text-emerald-400">
+                  {examResult.score} <span className="text-base text-slate-500">/ {examResult.maxScore}</span>
+                </div>
+                <div className="text-xs text-slate-300 font-medium">
+                  Skor Persentase: {examResult.percentage}% · Status: {examResult.percentage >= 75 ? 'Tuntas (KKTP Tercapai)' : 'Perlu Remedial'}
+                </div>
+              </>
+            )}
           </div>
 
           <div className="text-xs text-slate-400 space-y-1 text-left bg-slate-800/40 p-3 rounded-lg">
@@ -1030,7 +1133,9 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
           {/* Dark Pill Timer */}
           <div className="flex items-center gap-2 px-3.5 py-1.5 bg-[#131b2e] rounded-xl border border-slate-800/80 font-mono text-xs font-semibold text-slate-200 shadow-xs">
             <Clock className="w-3.5 h-3.5 text-amber-400" />
-            <span className="tabular-nums">{formatSeconds(remainingSec)}</span>
+            <span className="tabular-nums">
+              {room?.durationMinutes === 0 ? 'Bebas Waktu' : formatSeconds(remainingSec)}
+            </span>
           </div>
 
           {/* Red Submit Button */}
@@ -1257,26 +1362,36 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
                   </div>
 
                   {/* Question Cards List */}
-                  {questions.map((q, idx) => {
-                    const selectedAnswer = answers[q.number] || '';
-                    return (
-                      <div
-                        key={q.id || q.number}
-                        onClick={() => setCurrentQIndex(idx)}
-                        className="bg-white rounded-lg border border-[#dadce0] p-6 space-y-4 shadow-[0_1px_2px_rgba(60,64,67,0.08)]"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="space-y-2.5 flex-1">
-                            {q.stimulus && (
-                              <div className="bg-[#f8f9fa] border-l-4 border-[#673ab7] px-3.5 py-2.5 text-xs text-[#3c4043] leading-relaxed rounded-r-sm select-text">
-                                {q.stimulus}
+                  {questions.length === 0 ? (
+                    <div className="bg-white rounded-lg border border-[#dadce0] p-6 text-center space-y-2 shadow-[0_1px_2px_rgba(60,64,67,0.08)]">
+                      <p className="text-sm font-medium text-[#202124]">
+                        Belum ada butir soal lokal pada paket ujian ini.
+                      </p>
+                      <p className="text-xs text-[#5f6368]">
+                        Pastikan tautan Google Form sudah ditautkan pada token ujian ini atau tambahkan soal di Bank Soal Guru.
+                      </p>
+                    </div>
+                  ) : (
+                    questions.map((q, idx) => {
+                      const selectedAnswer = answers[q.number] || '';
+                      return (
+                        <div
+                          key={q.id || q.number}
+                          onClick={() => setCurrentQIndex(idx)}
+                          className="bg-white rounded-lg border border-[#dadce0] p-6 space-y-4 shadow-[0_1px_2px_rgba(60,64,67,0.08)]"
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="space-y-2.5 flex-1">
+                              {q.stimulus && (
+                                <div className="bg-[#f8f9fa] border-l-4 border-[#673ab7] px-3.5 py-2.5 text-xs text-[#3c4043] leading-relaxed rounded-r-sm select-text">
+                                  {q.stimulus}
+                                </div>
+                              )}
+                              <div className="text-[15px] font-normal text-[#202124] leading-relaxed select-text">
+                                {String(q.question || '').replace(/^\s*(?:No\.?\s*)?\d+\s*[.)]\s*/i, '')}
+                                <span className="text-[#d93025] ml-1">*</span>
                               </div>
-                            )}
-                            <div className="text-[15px] font-normal text-[#202124] leading-relaxed select-text">
-                              {q.question.replace(/^\s*(?:No\.?\s*)?\d+\s*[.)]\s*/i, '')}
-                              <span className="text-[#d93025] ml-1">*</span>
                             </div>
-                          </div>
                           <span className="text-xs text-[#70757a] whitespace-nowrap shrink-0 pt-0.5">
                             {q.points || 10} poin
                           </span>
@@ -1337,7 +1452,8 @@ export const SecureExamPlayer: React.FC<SecureExamPlayerProps> = ({
                         )}
                       </div>
                     );
-                  })}
+                  })
+                  )}
 
                   {/* Section 2 Bottom Action Row */}
                   <div className="flex flex-wrap items-center justify-between gap-3 pt-2">

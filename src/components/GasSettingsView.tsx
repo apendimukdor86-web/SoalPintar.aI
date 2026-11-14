@@ -18,42 +18,87 @@ import {
 
 export const EXACT_CODE_GS = `/**
  * soalpintar.ai — Google Form Creator Bridge
- * 
- * CARA SETUP (1x saja):
- * 1. Buka https://script.google.com
- * 2. Klik "New Project"
- * 3. Hapus isi default, paste seluruh kode ini
- * 4. Klik Deploy > New deployment
- * 5. Pilih type: Web app
- * 6. Execute as: Me (akun Anda)
- * 7. Who has access: Anyone
- * 8. Klik Deploy
- * 9. Copy URL yang muncul
- * 10. Paste URL ke Settings di dashboard guru
  *
- * SELESAI! Form akan dibuat di Google Drive Anda.
- *
- * VERSI 3.3: 
- * - Pembersihan otomatis awalan "undefined.", tanda titik berlebih, & nomor soal (cleanQuestionTitle & cleanExistingFormTitles).
- * - Fitur "Nilai Siswa" (respons, skor, jawaban per soal) & acak soal.
- * - Respons diambil per halaman (maks. 500) & bisa hanya yang baru, aman untuk ribuan respons.
- * OPSIONAL - acak urutan PILIHAN JAWABAN: di editor Apps Script klik "Services" (+)
- *   > pilih "Google Forms API" > Add. Tanpa ini, yang diacak hanya urutan soal.
- * Jika memperbarui dari versi lama: paste ulang kode ini, lalu
- * Deploy > Manage deployments > Edit (ikon pensil) > Version: New version > Deploy.
- * URL Web App tetap sama, jadi tidak perlu mengubah Settings di dashboard.
- * Saat diminta izin, izinkan akses Google Forms & Drive.
+ * VERSI 3.5.2 (Auto-Fallback FormApp & Bebas Error 403)
  */
 
-var SCRIPT_VERSION = '3.3';
+var SCRIPT_VERSION = '3.5.2';
 
 /**
- * Membersihkan awalan "undefined.", tanda titik/simbol berlebih,
- * serta nomor urut soal (misal: "1. ", "1) ", "No. 1: ").
+ * SHIM GOOGLE FORMS API v1 (via UrlFetchApp - Opsional)
+ * Otomatis fallback ke FormApp jika Google Forms REST API belum diaktifkan di GCP.
+ */
+var Forms = {
+  Form: {
+    get: function (formId) {
+      return formsApi_('get', 'https://forms.googleapis.com/v1/forms/' + formId);
+    },
+    batchUpdate: function (requestBody, formId) {
+      return formsApi_(
+        'post',
+        'https://forms.googleapis.com/v1/forms/' + formId + ':batchUpdate',
+        requestBody
+      );
+    },
+    Responses: {
+      list: function (formId, opts) {
+        opts = opts || {};
+        var qs = [];
+        if (opts.pageSize) qs.push('pageSize=' + opts.pageSize);
+        if (opts.pageToken) qs.push('pageToken=' + encodeURIComponent(opts.pageToken));
+        if (opts.filter) qs.push('filter=' + encodeURIComponent(opts.filter));
+        var url = 'https://forms.googleapis.com/v1/forms/' + formId + '/responses' +
+          (qs.length ? '?' + qs.join('&') : '');
+        return formsApi_('get', url);
+      }
+    }
+  }
+};
+
+function formsApi_(method, url, body) {
+  var cache = CacheService.getScriptCache();
+  if (cache.get('FORMS_REST_DISABLED') === '1') {
+    throw new Error('FORMS_REST_DISABLED');
+  }
+
+  var options = {
+    method: method,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  };
+  if (body) {
+    options.contentType = 'application/json';
+    options.payload = JSON.stringify(body);
+  }
+  var res = UrlFetchApp.fetch(url, options);
+  var code = res.getResponseCode();
+  if (code < 200 || code >= 300) {
+    var text = res.getContentText();
+    if (code === 403 && text.indexOf('SERVICE_DISABLED') !== -1) {
+      // Simpan status selama 10 menit agar tidak mengulang request 403
+      cache.put('FORMS_REST_DISABLED', '1', 600);
+    }
+    throw new Error('Forms API ' + code + ': ' + text);
+  }
+  return JSON.parse(res.getContentText());
+}
+
+/**
+ * Validasi token rahasia jika properti API_SECRET diatur di Script Properties.
+ */
+function isAuthorized(tokenFromRequest) {
+  var expectedSecret = PropertiesService.getScriptProperties().getProperty('API_SECRET');
+  if (!expectedSecret) return true;
+  return String(tokenFromRequest || '') === String(expectedSecret);
+}
+
+/**
+ * Membersihkan awalan "undefined.", tanda titik berlebih,
+ * serta nomor urut soal (1–3 digit diikuti tanda baca + spasi wajib).
  */
 function cleanQuestionTitle(str) {
   return String(str || '')
-    .replace(/^[\\s\\u00A0]*(?:undefined\\s*\\.?\\s*|\\.+\\s+|(?:no\\.?\\s*)?\\d+\\s*[\\.\\)\\-:]\\s*)+/i, '')
+    .replace(/^[\\s\\u00A0]*(?:undefined\\s*\\.?\\s*|\\.+\\s+|(?:no\\.?\\s*)?\\d{1,3}[\\.\\)\\-:]\\s+)+/i, '')
     .trim();
 }
 
@@ -76,33 +121,90 @@ function cleanExistingFormTitles(form) {
   }
 }
 
-function doPost(e) {
+/**
+ * Menyimpan cache pemetaan published_id -> form_id di ScriptProperties.
+ */
+function cacheFormMapping(form) {
   try {
+    var pubUrl = form.getPublishedUrl() || '';
+    var match = pubUrl.match(/\\/forms\\/d\\/e\\/([^\\/]+)/);
+    if (match && match[1]) {
+      PropertiesService.getScriptProperties().setProperty('PUB_MAP_' + match[1], form.getId());
+    }
+  } catch (e) {
+    // Abaikan jika gagal menyimpan cache
+  }
+}
+
+/**
+ * Sanitasi daftar pilihan ganda agar tidak kosong dan tidak duplikat.
+ */
+function sanitizeChoices(rawOptions, correctIndex) {
+  var list = Array.isArray(rawOptions) ? rawOptions : [];
+  var seen = {};
+  var cleaned = [];
+
+  for (var j = 0; j < list.length; j++) {
+    var text = String(list[j] === null || list[j] === undefined ? '' : list[j]).trim();
+    if (!text) text = 'Opsi ' + (j + 1);
+
+    while (seen[text]) {
+      text += '\\u200B';
+    }
+    seen[text] = true;
+    cleaned.push({
+      text: text,
+      isCorrect: (j === correctIndex)
+    });
+  }
+
+  if (cleaned.length === 0) {
+    cleaned.push({ text: 'Pilihan A', isCorrect: true });
+  }
+  return cleaned;
+}
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  var hasLock = false;
+
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return jsonOut({ status: 'error', version: SCRIPT_VERSION, message: 'Payload kosong.' });
+    }
+
     var data = JSON.parse(e.postData.contents);
-    
+    var urlToken = (e.parameter && e.parameter.token) || data.token;
+    if (!isAuthorized(urlToken)) {
+      return jsonOut({ status: 'error', code: 'unauthorized', version: SCRIPT_VERSION, message: 'Token API tidak valid.' });
+    }
+
+    hasLock = lock.tryLock(15000);
+
     var quizId = data.quiz_id || '';
     var title = data.title || 'Quiz soalpintar.ai';
     var guruName = data.guru_name || 'Guru';
-    var questions = data.questions || [];
+    var questions = Array.isArray(data.questions) ? data.questions : [];
     var folderName = data.folder_name || guruName;
     var totalQuestions = questions.length;
-    
-    // 0. Cek apakah folder dan form untuk Quiz ID ini sudah pernah dibuat sebelumnya
+
+    // 0. Cek folder & form yang sudah pernah dibuat untuk Quiz ID ini
     var parentFolderName = 'v2-soalpintar.ai';
     var folders = DriveApp.getFoldersByName(parentFolderName);
     var parentFolder = folders.hasNext() ? folders.next() : DriveApp.createFolder(parentFolderName);
-    
+
     var guruFolders = parentFolder.getFoldersByName(folderName);
     var guruFolder = guruFolders.hasNext() ? guruFolders.next() : parentFolder.createFolder(folderName);
-    
+
     if (quizId) {
-      var searchName = "Quiz: " + title + " [ID-" + quizId + "]";
+      var searchName = 'Quiz: ' + title + ' [ID-' + quizId + ']';
       var files = guruFolder.getFilesByName(searchName);
       if (files.hasNext()) {
         var file = files.next();
         try {
           var existingForm = FormApp.openById(file.getId());
           cleanExistingFormTitles(existingForm);
+          cacheFormMapping(existingForm);
           return jsonOut({
             status: 'success',
             version: SCRIPT_VERSION,
@@ -114,100 +216,87 @@ function doPost(e) {
             is_existing: true
           });
         } catch (err) {
-          // Abaikan jika error saat membuka
+          // Lanjut buat baru jika file lama korup/tidak bisa dibuka
         }
       }
     }
 
-    // Calculate points per question so total = 100%
+    // Hitung poin per soal agar total = 100
     var pointsPerQuestion = totalQuestions > 0 ? Math.floor(100 / totalQuestions) : 1;
     var remainder = totalQuestions > 0 ? 100 - (pointsPerQuestion * totalQuestions) : 0;
-    
-    // Create Google Form
+
+    // Buat Google Form baru
     var form = FormApp.create(title);
     form.setIsQuiz(true);
-    
+
     var description = 'Quiz dibuat oleh ' + guruName + ' \\n\\nIsi data diri Anda di bagian pertama, lalu kerjakan soal di bagian berikutnya.';
     if (quizId) {
       description += '\\n\\n[Quiz ID: ' + quizId + ']';
     }
     form.setDescription(description);
-    
+
     // ========================================
     // SECTION 1: Data Siswa
     // ========================================
-    
-    // Nama Lengkap
     var namaItem = form.addTextItem();
     namaItem.setTitle('Nama Lengkap');
     namaItem.setRequired(true);
     namaItem.setHelpText('Masukkan nama lengkap Anda');
-    
-    // Nomor Absen
+
     var absenItem = form.addTextItem();
     absenItem.setTitle('Nomor Absen');
     absenItem.setRequired(true);
     absenItem.setHelpText('Masukkan nomor absen Anda');
-    
-    // Kelas
+
     var kelasItem = form.addTextItem();
     kelasItem.setTitle('Kelas');
     kelasItem.setRequired(true);
     kelasItem.setHelpText('Contoh: 9A, 10 IPA 2, 7B');
-    
+
     // ========================================
     // SECTION 2: Soal-Soal
     // ========================================
-    
     var pageBreak = form.addPageBreakItem();
     pageBreak.setTitle('Soal Ujian');
     pageBreak.setHelpText('Kerjakan soal berikut dengan teliti. Pilih satu jawaban yang paling tepat.\\nTotal nilai: 100');
-    
-    // Add questions with answer key and points
-    for (var i = 0; i < questions.length; i++) {
-      var q = questions[i];
-      
-      // Distribute points: spread remainder across first few questions
-      var pts = pointsPerQuestion;
-      if (i < remainder) {
-        pts = pointsPerQuestion + 1;
-      }
 
-      // Normalisasi payload: pastikan q.number tidak pernah menghasilkan "undefined."
-      var cleanTitle = cleanQuestionTitle(q.question);
+    for (var i = 0; i < questions.length; i++) {
+      var q = questions[i] || {};
+      var pts = pointsPerQuestion + (i < remainder ? 1 : 0);
+      var cleanTitle = cleanQuestionTitle(q.question) || ('Pertanyaan ' + (i + 1));
 
       if (q.type === 'essay') {
-        var item = form.addParagraphTextItem();
-        item.setTitle(cleanTitle);
-        item.setRequired(true);
-        item.setPoints(pts);
+        var essayItem = form.addParagraphTextItem();
+        essayItem.setTitle(cleanTitle);
+        essayItem.setRequired(true);
+        essayItem.setPoints(pts);
       } else {
-        var item = form.addMultipleChoiceItem();
-        item.setTitle(cleanTitle);
-        item.setRequired(true);
-        item.setPoints(pts);
-        
-        // Build choices with correct answer marked
+        var mcItem = form.addMultipleChoiceItem();
+        mcItem.setTitle(cleanTitle);
+        mcItem.setRequired(true);
+        mcItem.setPoints(pts);
+
+        var safeChoices = sanitizeChoices(q.options, q.answer);
         var choices = [];
-        for (var j = 0; j < q.options.length; j++) {
-          var isCorrect = (j === q.answer);
-          choices.push(item.createChoice(q.options[j], isCorrect));
+        for (var j = 0; j < safeChoices.length; j++) {
+          choices.push(mcItem.createChoice(safeChoices[j].text, safeChoices[j].isCorrect));
         }
-        item.setChoices(choices);
+        mcItem.setChoices(choices);
       }
     }
-    
-    // Acak urutan soal / pilihan jawaban (opsional, dari dashboard)
+
+    // Acak urutan soal / pilihan jawaban (opsional)
     var shuffleInfo = applyShuffle(form, !!data.shuffle_questions, !!data.shuffle_options);
 
-    // Move form to folder (create if not exists)
+    // Pindahkan file form ke folder guru
     var formFile = DriveApp.getFileById(form.getId());
     if (quizId) {
-      formFile.setName("Quiz: " + title + " [ID-" + quizId + "]");
+      formFile.setName('Quiz: ' + title + ' [ID-' + quizId + ']');
     }
-    guruFolder.addFile(formFile);
-    DriveApp.getRootFolder().removeFile(formFile);
-    
+    formFile.moveTo(guruFolder);
+
+    cacheFormMapping(form);
+
     return jsonOut({
       status: 'success',
       version: SCRIPT_VERSION,
@@ -219,44 +308,78 @@ function doPost(e) {
       total_points: 100,
       points_per_question: pointsPerQuestion,
       shuffle_questions: shuffleInfo.questions,
-      shuffle_options: shuffleInfo.options
+      shuffle_options: shuffleInfo.options,
+      shuffle_note: shuffleInfo.message
     });
-    
+
   } catch (error) {
     return jsonOut({
       status: 'error',
       version: SCRIPT_VERSION,
       message: error.toString()
     });
+  } finally {
+    if (hasLock) {
+      lock.releaseLock();
+    }
   }
 }
 
 /**
  * doGet: aksi BACA & PEMELIHARAAN.
- *   ?action=version                                       -> versi script
- *   ?action=responses&form_id=ID[&since=ms][&offset=0&limit=500] -> respons + nilai (per halaman)
- *   ?action=find_form&published_id=PID                    -> cari ID form (edit) dari ID link publik
- *   ?action=set_shuffle&form_id=ID&questions=1&options=1  -> atur acak soal / pilihan
- *   ?action=clean_titles&form_id=ID                       -> bersihkan judul soal pada form lama
  */
 function doGet(e) {
   var p = (e && e.parameter) || {};
   try {
-    if (p.action === 'version') return jsonOut({ status: 'ok', version: SCRIPT_VERSION, script_version: SCRIPT_VERSION });
-    if (p.action === 'responses') return jsonOut(getFormResponses(p.form_id, p.since, p.offset, p.limit));
+    if (p.action === 'version') {
+      return jsonOut({ status: 'ok', version: SCRIPT_VERSION, script_version: SCRIPT_VERSION });
+    }
+
+    if (!isAuthorized(p.token)) {
+      return jsonOut({ status: 'error', code: 'unauthorized', version: SCRIPT_VERSION, message: 'Token API tidak valid.' });
+    }
+
+    if (p.action === 'responses') {
+      return jsonOut(
+        getFormResponses(
+          p.form_id,
+          p.since,
+          p.offset,
+          p.limit,
+          p.summary_only === '1',
+          p.nocache === '1'
+        )
+      );
+    }
     if (p.action === 'find_form') return jsonOut(findFormByPublishedId(p.published_id));
     if (p.action === 'set_shuffle') {
       var target = FormApp.openById(p.form_id);
       var info = applyShuffle(target, p.questions === '1', p.options === '1');
-      return jsonOut({ status: 'success', version: SCRIPT_VERSION, shuffle_questions: info.questions, shuffle_options: info.options, options_message: info.message });
+      return jsonOut({
+        status: 'success',
+        version: SCRIPT_VERSION,
+        shuffle_questions: info.questions,
+        shuffle_options: info.options,
+        options_message: info.message
+      });
     }
     if (p.action === 'clean_titles' && p.form_id) {
       var formToClean = FormApp.openById(p.form_id);
       cleanExistingFormTitles(formToClean);
-      return jsonOut({ status: 'success', version: SCRIPT_VERSION, form_id: p.form_id, message: 'Judul soal berhasil dibersihkan.' });
+      return jsonOut({
+        status: 'success',
+        version: SCRIPT_VERSION,
+        form_id: p.form_id,
+        message: 'Judul soal berhasil dibersihkan.'
+      });
     }
 
-    return jsonOut({ status: 'ok', message: 'soalpintar.ai Form Creator is running!', version: SCRIPT_VERSION, script_version: SCRIPT_VERSION });
+    return jsonOut({
+      status: 'ok',
+      message: 'soalpintar.ai Form Creator is running!',
+      version: SCRIPT_VERSION,
+      script_version: SCRIPT_VERSION
+    });
   } catch (error) {
     return jsonOut({ status: 'error', message: error.toString(), version: SCRIPT_VERSION });
   }
@@ -267,17 +390,54 @@ function jsonOut(obj) {
 }
 
 /**
- * Ambil semua respons form beserta skor kuis.
- * Kolom identitas dicari dari judul pertanyaan yang mengandung "nama", "absen", "kelas".
+ * Ambil respons form beserta skor kuis.
  */
-function getFormResponses(formId, sinceMs, offsetParam, limitParam) {
+function getFormResponses(formId, sinceMs, offsetParam, limitParam, summaryOnly, noCache) {
   if (!formId) return { status: 'error', message: 'form_id wajib diisi', version: SCRIPT_VERSION };
 
+  var offset = Math.max(0, parseInt(offsetParam, 10) || 0);
+  var limit = Math.min(2000, Math.max(1, parseInt(limitParam, 10) || 1000));
+  var cacheKey = 'RESP_' + formId + '_' + (sinceMs || '0') + '_' + offset + '_' + limit + '_' + (summaryOnly ? '1' : '0');
+
+  var cache = CacheService.getScriptCache();
+  if (!noCache) {
+    var cached = cache.get(cacheKey);
+    if (cached) {
+      try {
+        var parsedCache = JSON.parse(cached);
+        parsedCache.from_cache = true;
+        return parsedCache;
+      } catch (e) {}
+    }
+  }
+
+  // 2. Jalur Cepat: Google Forms REST API v1 (hanya dicoba jika belum ditandai disabled)
+  if (typeof Forms !== 'undefined' && cache.get('FORMS_REST_DISABLED') !== '1') {
+    try {
+      var fastResult = getResponsesViaFormsApi(formId, sinceMs, offset, limit, summaryOnly);
+      if (fastResult) {
+        try {
+          var serialized = JSON.stringify(fastResult);
+          if (serialized.length < 95000) cache.put(cacheKey, serialized, 60);
+        } catch (e) {}
+        return fastResult;
+      }
+    } catch (apiErr) {
+      // Otomatis lanjut ke fallback FormApp tanpa error
+    }
+  }
+
+  // 3. Jalur Utama / Fallback: FormApp teroptimasi (100% kompatibel tanpa GCP setup)
   var form;
   try {
     form = FormApp.openById(formId);
   } catch (err) {
-    return { status: 'error', code: 'no_access', message: 'Form tidak bisa dibuka oleh akun Google ini. Pastikan form ada di akun yang sama dengan Apps Script.', version: SCRIPT_VERSION };
+    return {
+      status: 'error',
+      code: 'no_access',
+      message: 'Form tidak bisa dibuka oleh akun Google ini. Pastikan form ada di akun yang sama dengan Apps Script.',
+      version: SCRIPT_VERSION
+    };
   }
 
   var isQuiz = form.isQuiz();
@@ -292,11 +452,12 @@ function getFormResponses(formId, sinceMs, offsetParam, limitParam) {
     var type = it.getType();
 
     if (type === FormApp.ItemType.TEXT) {
-      if (!idItems.name && title.indexOf('nama') !== -1) idItems.name = it.getId();
-      else if (!idItems.absen && title.indexOf('absen') !== -1) idItems.absen = it.getId();
-      else if (!idItems.kelas && title.indexOf('kelas') !== -1) idItems.kelas = it.getId();
+      if (!idItems.name && title.indexOf('nama') !== -1) idItems.name = it;
+      else if (!idItems.absen && title.indexOf('absen') !== -1) idItems.absen = it;
+      else if (!idItems.kelas && title.indexOf('kelas') !== -1) idItems.kelas = it;
     }
-    if (isQuiz) {
+
+    if (isQuiz && offset === 0) {
       var pts = itemPoints(it);
       maxScore += pts;
       if (pts > 0) itemMeta.push(describeItem(it, pts));
@@ -305,50 +466,51 @@ function getFormResponses(formId, sinceMs, offsetParam, limitParam) {
 
   var responses = sinceMs ? form.getResponses(new Date(Number(sinceMs))) : form.getResponses();
   var total = responses.length;
-  var offset = Math.max(0, parseInt(offsetParam, 10) || 0);
-  var limit = Math.min(1000, Math.max(1, parseInt(limitParam, 10) || 500));
   var end = Math.min(total, offset + limit);
   var rows = [];
+
   for (var r = offset; r < end; r++) {
     var resp = responses[r];
+    var rName = idItems.name ? resp.getResponseForItem(idItems.name) : null;
+    var rAbsen = idItems.absen ? resp.getResponseForItem(idItems.absen) : null;
+    var rKelas = idItems.kelas ? resp.getResponseForItem(idItems.kelas) : null;
+
     var row = {
       id: resp.getId(),
       submitted_at: resp.getTimestamp().toISOString(),
       email: resp.getRespondentEmail() || null,
-      name: null, absen: null, kelas: null,
+      name: rName ? String(rName.getResponse() || '') : null,
+      absen: rAbsen ? String(rAbsen.getResponse() || '') : null,
+      kelas: rKelas ? String(rKelas.getResponse() || '') : null,
       score: null
     };
-
-    var answers = resp.getItemResponses();
-    for (var a = 0; a < answers.length; a++) {
-      var itemId = answers[a].getItem().getId();
-      var val = String(answers[a].getResponse() || '');
-      if (itemId === idItems.name) row.name = val;
-      else if (itemId === idItems.absen) row.absen = val;
-      else if (itemId === idItems.kelas) row.kelas = val;
-    }
 
     if (isQuiz) {
       var score = 0;
       var graded = resp.getGradableItemResponses();
-      row.answers = {};
+      if (!summaryOnly) row.answers = {};
+
       for (var g = 0; g < graded.length; g++) {
         var gScore = Number(graded[g].getScore() || 0);
         score += gScore;
-        var raw = graded[g].getResponse();
-        row.answers[String(graded[g].getItem().getId())] = {
-          r: Array.isArray(raw) ? raw.join(' | ') : (raw === null || raw === undefined ? '' : String(raw)),
-          s: gScore
-        };
+
+        if (!summaryOnly) {
+          var raw = graded[g].getResponse();
+          row.answers[String(graded[g].getItem().getId())] = {
+            r: Array.isArray(raw) ? raw.join(' | ') : (raw === null || raw === undefined ? '' : String(raw)),
+            s: gScore
+          };
+        }
       }
       row.score = score;
     }
     rows.push(row);
   }
 
-  return {
+  var output = {
     status: 'success',
     version: SCRIPT_VERSION,
+    engine: 'formapp_fast',
     form_id: form.getId(),
     title: form.getTitle(),
     is_quiz: isQuiz,
@@ -359,6 +521,139 @@ function getFormResponses(formId, sinceMs, offsetParam, limitParam) {
     has_more: end < total,
     next_offset: end < total ? end : null,
     accepting_responses: form.isAcceptingResponses(),
+    responses: rows
+  };
+
+  try {
+    var outStr = JSON.stringify(output);
+    if (outStr.length < 95000) cache.put(cacheKey, outStr, 60);
+  } catch (e) {}
+
+  return output;
+}
+
+/**
+ * Helper Jalur Cepat: Mengambil ribuan respons via Google Forms API v1.
+ */
+function getResponsesViaFormsApi(formId, sinceMs, offset, limit, summaryOnly) {
+  var formMeta = Forms.Form.get(formId);
+  var isQuiz = Boolean(formMeta.settings && formMeta.settings.quizSettings && formMeta.settings.quizSettings.isQuiz);
+  var maxScore = 0;
+  var itemMeta = [];
+  var qIdToItemId = {};
+  var idQIds = { name: null, absen: null, kelas: null };
+
+  (formMeta.items || []).forEach(function (item) {
+    var q = item.questionItem && item.questionItem.question;
+    if (!q) return;
+
+    var qId = q.questionId;
+    var decItemId = String(parseInt(item.itemId, 16));
+    qIdToItemId[qId] = decItemId;
+
+    var lowerTitle = (item.title || '').toLowerCase();
+    if (q.textQuestion && !q.textQuestion.paragraph) {
+      if (!idQIds.name && lowerTitle.indexOf('nama') !== -1) idQIds.name = qId;
+      else if (!idQIds.absen && lowerTitle.indexOf('absen') !== -1) idQIds.absen = qId;
+      else if (!idQIds.kelas && lowerTitle.indexOf('kelas') !== -1) idQIds.kelas = qId;
+    }
+
+    if (isQuiz && offset === 0) {
+      var pts = Number((q.grading && q.grading.pointValue) || 0);
+      maxScore += pts;
+      if (pts > 0) {
+        var choices = [];
+        var correctVals = {};
+        if (q.grading && q.grading.correctAnswers && q.grading.correctAnswers.answers) {
+          q.grading.correctAnswers.answers.forEach(function (a) { correctVals[a.value] = true; });
+        }
+        if (q.choiceQuestion && q.choiceQuestion.options) {
+          q.choiceQuestion.options.forEach(function (opt) {
+            choices.push({ value: opt.value, correct: Boolean(correctVals[opt.value]) });
+          });
+        }
+        itemMeta.push({
+          id: decItemId,
+          title: item.title || '',
+          type: q.choiceQuestion ? 'MULTIPLE_CHOICE' : 'PARAGRAPH_TEXT',
+          points: pts,
+          choices: choices
+        });
+      }
+    }
+  });
+
+  var allResponses = [];
+  var pageToken = null;
+  do {
+    var listOpts = { pageSize: 5000 };
+    if (sinceMs) listOpts.filter = 'timestamp >= ' + new Date(Number(sinceMs)).toISOString();
+    if (pageToken) listOpts.pageToken = pageToken;
+
+    var apiRes = Forms.Form.Responses.list(formId, listOpts);
+    if (apiRes.responses && apiRes.responses.length) {
+      allResponses = allResponses.concat(apiRes.responses);
+    }
+    pageToken = apiRes.nextPageToken || null;
+  } while (pageToken && allResponses.length < offset + limit);
+
+  var total = allResponses.length;
+  var end = Math.min(total, offset + limit);
+  var rows = [];
+
+  for (var r = offset; r < end; r++) {
+    var resp = allResponses[r];
+    var ansMap = resp.answers || {};
+
+    function extractText(qId) {
+      if (!qId || !ansMap[qId] || !ansMap[qId].textAnswers || !ansMap[qId].textAnswers.answers) return null;
+      return ansMap[qId].textAnswers.answers.map(function (a) { return a.value || ''; }).join(' | ');
+    }
+
+    var row = {
+      id: resp.responseId,
+      submitted_at: resp.lastSubmittedTime || resp.createTime,
+      email: resp.respondentEmail || null,
+      name: extractText(idQIds.name),
+      absen: extractText(idQIds.absen),
+      kelas: extractText(idQIds.kelas),
+      score: isQuiz ? Number(resp.totalScore || 0) : null
+    };
+
+    if (isQuiz && !summaryOnly) {
+      row.answers = {};
+      Object.keys(ansMap).forEach(function (qId) {
+        var decId = qIdToItemId[qId];
+        if (!decId) return;
+        var aObj = ansMap[qId];
+        var valStr = (aObj.textAnswers && aObj.textAnswers.answers)
+          ? aObj.textAnswers.answers.map(function (x) { return x.value || ''; }).join(' | ')
+          : '';
+        row.answers[decId] = {
+          r: valStr,
+          s: Number((aObj.grade && aObj.grade.score) || 0)
+        };
+      });
+    }
+
+    rows.push(row);
+  }
+
+  var formObj = FormApp.openById(formId);
+  return {
+    status: 'success',
+    version: SCRIPT_VERSION,
+    engine: 'forms_api_v1',
+    form_id: formId,
+    title: (formMeta.info && formMeta.info.title) || formObj.getTitle(),
+    is_quiz: isQuiz,
+    max_score: isQuiz ? maxScore : null,
+    items: offset === 0 ? itemMeta : [],
+    total: total,
+    offset: offset,
+    has_more: Boolean(pageToken) || end < total,
+    next_offset: (Boolean(pageToken) || end < total) ? end : null,
+    accepting_responses: formObj.isAcceptingResponses(),
     responses: rows
   };
 }
@@ -382,7 +677,6 @@ function itemPoints(it) {
   }
 }
 
-/** Metadata soal untuk analisis butir: judul, poin, pilihan & kunci jawaban. */
 function describeItem(it, points) {
   var T = FormApp.ItemType;
   var meta = { id: String(it.getId()), title: it.getTitle(), type: String(it.getType()), points: points, choices: [] };
@@ -399,15 +693,21 @@ function describeItem(it, points) {
 }
 
 /**
- * Acak urutan soal (FormApp) dan, jika layanan "Google Forms API" diaktifkan,
- * acak urutan pilihan jawaban setiap soal pilihan ganda.
+ * Acak urutan soal & pilihan jawaban.
+ * Hanya memanggil Forms REST API jika shuffleOptions === true.
  */
 function applyShuffle(form, shuffleQuestions, shuffleOptions) {
+  var messages = [];
   var result = { questions: shuffleQuestions, options: false, message: '' };
   form.setShuffleQuestions(shuffleQuestions);
 
-  if (typeof Forms === 'undefined') {
-    result.message = shuffleOptions ? 'Layanan "Google Forms API" belum diaktifkan di Apps Script, pilihan jawaban tidak diacak.' : '';
+  if (shuffleQuestions) {
+    messages.push('Catatan: Google Forms juga mengacak urutan isian identitas siswa (Nama/Absen/Kelas) saat acak soal aktif.');
+  }
+
+  // Jika tidak diminta mengacak pilihan jawaban, langsung selesai tanpa memanggil REST API
+  if (!shuffleOptions) {
+    result.message = messages.join(' ');
     return result;
   }
 
@@ -417,49 +717,105 @@ function applyShuffle(form, shuffleQuestions, shuffleOptions) {
     (full.items || []).forEach(function (item, index) {
       var q = item.questionItem && item.questionItem.question;
       if (q && q.choiceQuestion) {
-        requests.push({ updateItem: {
-          item: { questionItem: { question: { choiceQuestion: { shuffle: shuffleOptions } } } },
-          location: { index: index },
-          updateMask: 'questionItem.question.choiceQuestion.shuffle'
-        } });
+        requests.push({
+          updateItem: {
+            item: { questionItem: { question: { choiceQuestion: { shuffle: true } } } },
+            location: { index: index },
+            updateMask: 'questionItem.question.choiceQuestion.shuffle'
+          }
+        });
       }
     });
     if (requests.length) Forms.Form.batchUpdate({ requests: requests }, form.getId());
-    result.options = shuffleOptions;
+    result.options = true;
   } catch (err) {
-    result.message = 'Gagal mengatur acak pilihan: ' + err;
+    messages.push('Acak pilihan jawaban dilewati (Google Forms REST API tidak aktif di GCP).');
   }
+
+  result.message = messages.join(' ');
   return result;
 }
 
 /**
- * Untuk form yang di-import manual (hanya punya link publik /forms/d/e/PID/viewform):
- * cari form di Google Drive akun ini yang link publiknya cocok.
+ * Cari form berdasarkan published_id.
  */
 function findFormByPublishedId(publishedId) {
   if (!publishedId) return { status: 'error', message: 'published_id wajib diisi', version: SCRIPT_VERSION };
 
+  var props = PropertiesService.getScriptProperties();
+  var cachedId = props.getProperty('PUB_MAP_' + publishedId);
+
+  if (cachedId) {
+    try {
+      var cachedForm = FormApp.openById(cachedId);
+      return {
+        status: 'success',
+        version: SCRIPT_VERSION,
+        form_id: cachedForm.getId(),
+        title: cachedForm.getTitle(),
+        is_quiz: cachedForm.isQuiz(),
+        from_cache: true
+      };
+    } catch (e) {
+      props.deleteProperty('PUB_MAP_' + publishedId);
+    }
+  }
+
   var files = DriveApp.getFilesByType(MimeType.GOOGLE_FORMS);
   var checked = 0;
-  while (files.hasNext() && checked < 500) {
+  while (files.hasNext() && checked < 250) {
     var file = files.next();
     checked++;
     try {
       var f = FormApp.openById(file.getId());
+      cacheFormMapping(f);
       if ((f.getPublishedUrl() || '').indexOf(publishedId) !== -1) {
-        return { status: 'success', version: SCRIPT_VERSION, form_id: f.getId(), title: f.getTitle(), is_quiz: f.isQuiz() };
+        return {
+          status: 'success',
+          version: SCRIPT_VERSION,
+          form_id: f.getId(),
+          title: f.getTitle(),
+          is_quiz: f.isQuiz()
+        };
       }
     } catch (err) {
       // Lewati form yang tidak bisa dibuka
     }
   }
-  return { status: 'error', code: 'not_found', message: 'Form tidak ditemukan di Google Drive akun ini (dicek ' + checked + ' form).', version: SCRIPT_VERSION };
+
+  return {
+    status: 'error',
+    code: 'not_found',
+    message: 'Form tidak ditemukan di Google Drive akun ini (dicek ' + checked + ' form).',
+    version: SCRIPT_VERSION
+  };
 }
-`;
+
+/**
+ * Fungsi pengujian koneksi (aman dijalankan tanpa error meskipun REST API v1 tidak aktif).
+ */
+function testFormsApi() {
+  var formId = '1FnQiCEnVvCqXG4OsP6UlcV_U7o4DSFEv-RwjOmvGZqQ';
+
+  // 1. Uji jalur utama FormApp (wajib berjalan)
+  var form = FormApp.openById(formId);
+  Logger.log('[OK] FormApp berhasil terhubung. Judul Form: ' + form.getTitle());
+
+  // 2. Uji jalur opsional Google Forms REST API v1
+  try {
+    CacheService.getScriptCache().remove('FORMS_REST_DISABLED');
+    var f = Forms.Form.get(formId);
+    Logger.log('[OK] Google Forms REST API v1 aktif. Judul: ' + f.info.title);
+  } catch (err) {
+    Logger.log('[INFO] Google Forms REST API v1 tidak aktif di project GCP ini. Script otomatis berjalan normal menggunakan FormApp.');
+  }
+}`;
 
 interface GasSettingsViewProps {
   webAppUrl: string;
   onSaveWebAppUrl: (url: string) => void;
+  gasApiSecret?: string;
+  onSaveGasApiSecret?: (secret: string) => void;
   guruName: string;
   onSaveGuruName: (name: string) => void;
   shuffleQuestions: boolean;
@@ -471,6 +827,8 @@ interface GasSettingsViewProps {
 export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
   webAppUrl,
   onSaveWebAppUrl,
+  gasApiSecret = '',
+  onSaveGasApiSecret,
   guruName,
   onSaveGuruName,
   shuffleQuestions,
@@ -479,6 +837,7 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
   onSaveShuffleOptions,
 }) => {
   const [urlInput, setUrlInput] = useState(webAppUrl);
+  const [secretInput, setSecretInput] = useState(gasApiSecret);
   const [nameInput, setNameInput] = useState(guruName || 'Apendi Mukdor, S.Pd.');
   const [shuffleQ, setShuffleQ] = useState(shuffleQuestions);
   const [shuffleO, setShuffleO] = useState(shuffleOptions);
@@ -508,8 +867,15 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
     setUrlInput(webAppUrl);
   }, [webAppUrl]);
 
+  useEffect(() => {
+    setSecretInput(gasApiSecret);
+  }, [gasApiSecret]);
+
   const handleSaveSettings = () => {
     onSaveWebAppUrl(urlInput.trim());
+    if (onSaveGasApiSecret) {
+      onSaveGasApiSecret(secretInput.trim());
+    }
     onSaveGuruName(nameInput.trim());
     onSaveShuffleQuestions(shuffleQ);
     onSaveShuffleOptions(shuffleO);
@@ -528,13 +894,29 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
       const res = await fetch('/api/gas/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ webAppUrl: urlInput.trim() }),
+        body: JSON.stringify({
+          webAppUrl: urlInput.trim(),
+          apiSecret: secretInput.trim() || undefined,
+        }),
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = rawText && !rawText.trim().startsWith('<') ? JSON.parse(rawText) : null;
+      } catch {
+        data = null;
+      }
+      if (!data) {
+        setTestResult({
+          success: false,
+          message: `Respons Web App bukan JSON valid (HTTP ${res.status}). Pastikan Web App sudah di-Deploy ulang sebagai New version dengan akses "Anyone".`,
+        });
+        return;
+      }
       setTestResult({
-        success: data.success,
+        success: Boolean(res.ok && data.success),
         message: data.message || 'Respons diterima dari Web App.',
-        version: data.version || '3.2',
+        version: data.version || '3.5.2',
       });
     } catch (err: any) {
       setTestResult({
@@ -560,7 +942,8 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           webAppUrl: urlInput.trim(),
-          title: 'Tes Kuis Soalpintar.ai Bridge v3.3',
+          apiSecret: secretInput.trim() || undefined,
+          title: 'Tes Kuis Soalpintar.ai Bridge v3.5.2',
           quiz_id: 'demo-' + Date.now().toString().slice(-5),
           guru_name: nameInput.trim() || 'Guru',
           folder_name: nameInput.trim() || 'Guru',
@@ -589,16 +972,22 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
         }),
       });
 
-      const data = await res.json();
-      if (data.success && data.form_url) {
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = rawText && !rawText.trim().startsWith('<') ? JSON.parse(rawText) : null;
+      } catch {
+        data = null;
+      }
+      if (res.ok && data?.success && data.form_url) {
         setDemoCreatedResult({
           form_url: data.form_url,
-          edit_url: data.edit_url,
-          form_id: data.form_id,
+          edit_url: data.edit_url || '',
+          form_id: data.form_id || '',
         });
         showToast('Form demo Google Forms berhasil dibuat!');
       } else {
-        showToast('Gagal membuat demo form: ' + (data.message || 'Error'));
+        showToast('Gagal membuat demo form: ' + (data?.message || `HTTP ${res.status}`));
       }
     } catch (err: any) {
       showToast('Error: ' + err.message);
@@ -630,15 +1019,15 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
       <div>
         <div className="flex items-center gap-2">
           <span className="font-mono text-[11px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-1 rounded-md border border-emerald-200 dark:border-emerald-800">
-            GOOGLE APPS SCRIPT BRIDGE v3.2
+            GOOGLE APPS SCRIPT BRIDGE v3.5.2
           </span>
-          <span className="text-xs text-slate-400">· Full Automation & Live Grading</span>
+          <span className="text-xs text-slate-400">· Auto-Fallback FormApp, Bebas Error 403 &amp; Live Grading</span>
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 mt-1">
           Pengaturan URL Web App & Script Code.gs
         </h1>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Hubungkan Web App Google Apps Script ke dashboard Soalpintar.ai untuk membuat formulir kuis otomatis di Google Drive Anda dan menarik hasil nilai siswa secara real-time.
+          Hubungkan Web App Google Apps Script ke dashboard Soalpintar.ai untuk membuat formulir kuis otomatis di Google Drive Anda dan menarik ribuan hasil nilai siswa secara cepat.
         </p>
       </div>
 
@@ -652,7 +1041,7 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
                 <FileCode className="w-4 h-4 text-emerald-600" />
                 <span>Konfigurasi URL Web App</span>
               </div>
-              <span className="text-[11px] font-mono text-slate-400">Versi 3.3</span>
+              <span className="text-[11px] font-mono text-slate-400">Versi 3.5.2</span>
             </div>
 
             <div className="space-y-4">
@@ -669,6 +1058,23 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
                 />
                 <span className="text-[11px] text-slate-400 mt-1 block">
                   Dapatkan URL ini setelah melakukan <em>Deploy &gt; New deployment &gt; Web app</em> di script.google.com
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>API_SECRET (Opsional — Keamanan Web App):</span>
+                </label>
+                <input
+                  type="password"
+                  value={secretInput}
+                  onChange={(e) => setSecretInput(e.target.value)}
+                  placeholder="Kosongkan jika API_SECRET tidak diatur di Apps Script"
+                  className="w-full text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                />
+                <span className="text-[11px] text-slate-400 mt-1 block">
+                  Isi sesuai Script Property <code className="font-mono text-emerald-600">API_SECRET</code> jika Anda mengaktifkan proteksi token di Apps Script.
                 </span>
               </div>
 
@@ -723,7 +1129,7 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
                   <div>
                     <span className="font-semibold block">Acak Urutan Pilihan Jawaban (A/B/C/D)</span>
                     <span className="text-[11px] text-slate-400">
-                      Memerlukan layanan <em>Google Forms API</em> diaktifkan di menu Services (+) Apps Script.
+                      Menggunakan Google Forms REST API v1 jika aktif di GCP (otomatis dilewati dengan aman jika belum aktif).
                     </span>
                   </div>
                 </label>
@@ -771,7 +1177,7 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
                   <p className="mt-1 text-[11px] leading-relaxed">{testResult.message}</p>
                   {testResult.version && (
                     <div className="mt-1 font-mono text-[10px] opacity-80">
-                      Versi Script: {testResult.version} · Siap untuk pembuatan kuis otomatis & live grading.
+                      Versi Script: {testResult.version} · Siap untuk pembuatan kuis otomatis &amp; live grading.
                     </div>
                   )}
                 </div>
@@ -885,10 +1291,10 @@ export const GasSettingsView: React.FC<GasSettingsViewProps> = ({
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div>
                 <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                  Kode Script Lengkap: Code.gs (Versi 3.3 - Tanpa Nomor Soal)
+                  Kode Script Lengkap: Code.gs (Versi 3.5.2 - Auto-Fallback FormApp &amp; Bebas Error 403)
                 </span>
                 <p className="text-[11px] text-slate-400">
-                  Mendukung pembuatan formulir kuis, kunci jawaban, 100 poin otomatis, acak soal, dan penarikan nilai siswa.
+                  Mendukung shim Google Forms API v1 (UrlFetchApp) dengan auto-fallback aman ke FormApp tanpa error 403, API_SECRET opsional, LockService, cache find_form, &amp; testFormsApi().
                 </p>
               </div>
 

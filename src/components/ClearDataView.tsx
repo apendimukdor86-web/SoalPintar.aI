@@ -89,7 +89,11 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
       if (savedTokens) {
         const parsed = JSON.parse(savedTokens);
         if (Array.isArray(parsed)) {
-          setTokensCount(parsed.length);
+          setTokensCount(
+            parsed.filter((item: any) => item && typeof item === 'object' && String(item.token || '').trim() !== '').length
+          );
+        } else {
+          setTokensCount(0);
         }
       } else {
         setTokensCount(0);
@@ -101,6 +105,9 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
     // 3. Fetch live student sessions & rooms count from server
     try {
       const res = await fetch('/api/rooms');
+      if (!res.ok) return;
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) return;
       const data = await res.json();
       if (data?.success && Array.isArray(data.rooms)) {
         let count = 0;
@@ -285,7 +292,45 @@ export const ClearDataView: React.FC<ClearDataViewProps> = ({
                 onConfirm: async () => {
                   await callServerClear('restore');
                   localStorage.removeItem('soalpintar_exam_device_locks');
-                  localStorage.removeItem('soalpintar_created_tokens_v2');
+                  localStorage.setItem(
+                    'soalpintar_created_tokens_v2',
+                    JSON.stringify([
+                      {
+                        token: 'ZJT0P4M',
+                        label: 'ASAS',
+                        quizTitle: 'Ulangan',
+                        subject: 'IPA',
+                        grade: 'SMP',
+                        totalQuestions: 10,
+                        googleFormUrl: '',
+                        googleFormEditUrl: '',
+                        driveFolderUrl: 'https://drive.google.com',
+                        maxViolations: 3,
+                        expiryDateTime: '',
+                        waitingRoomEnabled: false,
+                        isExamStarted: true,
+                        isActive: true,
+                        createdAt: Date.now(),
+                      },
+                      {
+                        token: 'LCXEIYU',
+                        label: 'LATIHAN',
+                        quizTitle: 'Segitiga',
+                        subject: 'Matematika',
+                        grade: 'SMP',
+                        totalQuestions: 10,
+                        googleFormUrl: '',
+                        googleFormEditUrl: '',
+                        driveFolderUrl: 'https://drive.google.com',
+                        maxViolations: 3,
+                        expiryDateTime: '',
+                        waitingRoomEnabled: false,
+                        isExamStarted: true,
+                        isActive: true,
+                        createdAt: Date.now() - 60000,
+                      },
+                    ])
+                  );
                   localStorage.removeItem('soalpintar_manual_google_forms');
                   onRestoreDefaults();
                   showToast('Aplikasi berhasil di-reset ke data bawaan awal!');

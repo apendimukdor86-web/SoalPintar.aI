@@ -1,0 +1,772 @@
+/**
+ * soalpintar.ai — Google Form Creator Bridge
+ * 
+ * CARA SETUP (1x saja):
+ * 1. Buka https://script.google.com
+ * 2. Klik "New Project"
+ * 3. Hapus isi default, paste seluruh kode ini
+ * 4. Klik Deploy > New deployment
+ * 5. Pilih type: Web app
+ * 6. Execute as: Me (akun Anda)
+ * 7. Who has access: Anyone
+ * 8. Klik Deploy
+ * 9. Copy URL yang muncul
+ * 10. Paste URL ke Settings di dashboard guru
+ *
+ * OPSIONAL KEAMANAN (Disarankan):
+ * - Buka Project Settings (ikon roda gigi) > Script Properties > Add script property:
+ *   Property: API_SECRET | Value: <kode_rahasia_anda>
+ * - Jika API_SECRET diisi, frontend wajib mengirim ?token=<kode_rahasia_anda> atau field "token" di JSON body.
+ * - Jika tidak diisi, Web App tetap berjalan normal.
+ *
+ * OPSIONAL KECEPATAN MAKSIMAL & ACAK PILIHAN JAWABAN:
+ * - Di editor Apps Script klik "Services" (+) > pilih "Google Forms API" > Add.
+ * - Mengaktifkan layanan ini memungkinkan acak urutan pilihan jawaban sekaligus mempercepat
+ *   penarikan ribuan nilai siswa hingga 10x lipat via Google Forms REST API v1.
+ *
+ * CARA UPDATE DARI VERSI LAMA:
+ * - Paste ulang seluruh kode ini > Save (Ctrl+S) > Deploy > Manage deployments
+ *   > Edit (ikon pensil) > Version: New version > Deploy.
+ *
+ * VERSI 3.5 (Lengkap & Teroptimasi):
+ * - Pembersihan otomatis awalan "undefined.", tanda titik berlebih, & nomor soal (cleanQuestionTitle & cleanExistingFormTitles).
+ * - Proteksi regex agar angka desimal ("2.5 liter") & tahun ("1945:") tidak terpotong.
+ * - Keamanan API_SECRET opsional & LockService anti-duplikasi saat klik ganda.
+ * - Sanitasi pilihan ganda (cegah crash jika opsi kosong atau duplikat).
+ * - Caching published_id -> form_id (instan tanpa timeout) & DriveApp file.moveTo().
+ * - Optimasi getFormResponses: mendukung Google Forms API v1 batch, mode summary_only=1, & micro-cache 60 detik.
+ */
+
+var SCRIPT_VERSION = '3.5';
+
+/**
+ * Validasi token rahasia jika properti API_SECRET diatur di Script Properties.
+ */
+function isAuthorized(tokenFromRequest) {
+  var expectedSecret = PropertiesService.getScriptProperties().getProperty('API_SECRET');
+  if (!expectedSecret) return true; // Tidak diatur = mode kompatibel terbuka
+  return String(tokenFromRequest || '') === String(expectedSecret);
+}
+
+/**
+ * Membersihkan awalan "undefined.", tanda titik berlebih,
+ * serta nomor urut soal (1–3 digit diikuti tanda baca + spasi wajib).
+ * Aman untuk angka desimal seperti "2.5 liter" atau tahun "1945: ...".
+ */
+function cleanQuestionTitle(str) {
+  return String(str || '')
+    .replace(/^[\s\u00A0]*(?:undefined\s*\.?\s*|\.+\s+|(?:no\.?\s*)?\d{1,3}[\.\)\-:]\s+)+/i, '')
+    .trim();
+}
+
+/**
+ * Membersihkan judul pertanyaan pada Google Form yang sudah ada di Google Drive.
+ */
+function cleanExistingFormTitles(form) {
+  var items = form.getItems();
+  var T = FormApp.ItemType;
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var tp = it.getType();
+    if (tp === T.MULTIPLE_CHOICE || tp === T.PARAGRAPH_TEXT || tp === T.CHECKBOX || tp === T.LIST) {
+      var curTitle = it.getTitle() || '';
+      var cleaned = cleanQuestionTitle(curTitle);
+      if (cleaned && cleaned !== curTitle) {
+        it.setTitle(cleaned);
+      }
+    }
+  }
+}
+
+/**
+ * Menyimpan cache pemetaan published_id -> form_id di ScriptProperties
+ * agar pencarian form berikutnya instan tanpa loop DriveApp.
+ */
+function cacheFormMapping(form) {
+  try {
+    var pubUrl = form.getPublishedUrl() || '';
+    var match = pubUrl.match(/\/forms\/d\/e\/([^\/]+)/);
+    if (match && match[1]) {
+      PropertiesService.getScriptProperties().setProperty('PUB_MAP_' + match[1], form.getId());
+    }
+  } catch (e) {
+    // Abaikan jika gagal menyimpan cache
+  }
+}
+
+/**
+ * Sanitasi daftar pilihan ganda agar tidak kosong dan tidak duplikat
+ * (Google Forms melempar error jika ada 2 opsi dengan teks persis sama).
+ */
+function sanitizeChoices(rawOptions, correctIndex) {
+  var list = Array.isArray(rawOptions) ? rawOptions : [];
+  var seen = {};
+  var cleaned = [];
+
+  for (var j = 0; j < list.length; j++) {
+    var text = String(list[j] === null || list[j] === undefined ? '' : list[j]).trim();
+    if (!text) text = 'Opsi ' + (j + 1);
+
+    // Jika teks opsi kembar, tambahkan zero-width space (\u200B) agar unik di Google Forms
+    while (seen[text]) {
+      text += '\u200B';
+    }
+    seen[text] = true;
+    cleaned.push({
+      text: text,
+      isCorrect: (j === correctIndex)
+    });
+  }
+
+  // Fallback minimal 1 opsi jika array options kosong total
+  if (cleaned.length === 0) {
+    cleaned.push({ text: 'Pilihan A', isCorrect: true });
+  }
+  return cleaned;
+}
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  var hasLock = false;
+
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return jsonOut({ status: 'error', version: SCRIPT_VERSION, message: 'Payload kosong.' });
+    }
+
+    var data = JSON.parse(e.postData.contents);
+    var urlToken = (e.parameter && e.parameter.token) || data.token;
+    if (!isAuthorized(urlToken)) {
+      return jsonOut({ status: 'error', code: 'unauthorized', version: SCRIPT_VERSION, message: 'Token API tidak valid.' });
+    }
+
+    // Mencegah race condition jika guru klik ganda tombol buat form
+    hasLock = lock.tryLock(15000);
+
+    var quizId = data.quiz_id || '';
+    var title = data.title || 'Quiz soalpintar.ai';
+    var guruName = data.guru_name || 'Guru';
+    var questions = Array.isArray(data.questions) ? data.questions : [];
+    var folderName = data.folder_name || guruName;
+    var totalQuestions = questions.length;
+
+    // 0. Cek folder & form yang sudah pernah dibuat untuk Quiz ID ini
+    var parentFolderName = 'v2-soalpintar.ai';
+    var folders = DriveApp.getFoldersByName(parentFolderName);
+    var parentFolder = folders.hasNext() ? folders.next() : DriveApp.createFolder(parentFolderName);
+
+    var guruFolders = parentFolder.getFoldersByName(folderName);
+    var guruFolder = guruFolders.hasNext() ? guruFolders.next() : parentFolder.createFolder(folderName);
+
+    if (quizId) {
+      var searchName = 'Quiz: ' + title + ' [ID-' + quizId + ']';
+      var files = guruFolder.getFilesByName(searchName);
+      if (files.hasNext()) {
+        var file = files.next();
+        try {
+          var existingForm = FormApp.openById(file.getId());
+          cleanExistingFormTitles(existingForm);
+          cacheFormMapping(existingForm);
+          return jsonOut({
+            status: 'success',
+            version: SCRIPT_VERSION,
+            script_version: SCRIPT_VERSION,
+            form_url: existingForm.getPublishedUrl(),
+            edit_url: existingForm.getEditUrl(),
+            form_id: existingForm.getId(),
+            folder: folderName,
+            is_existing: true
+          });
+        } catch (err) {
+          // Lanjut buat baru jika file lama korup/tidak bisa dibuka
+        }
+      }
+    }
+
+    // Hitung poin per soal agar total = 100
+    var pointsPerQuestion = totalQuestions > 0 ? Math.floor(100 / totalQuestions) : 1;
+    var remainder = totalQuestions > 0 ? 100 - (pointsPerQuestion * totalQuestions) : 0;
+
+    // Buat Google Form baru
+    var form = FormApp.create(title);
+    form.setIsQuiz(true);
+
+    var description = 'Quiz dibuat oleh ' + guruName + ' \n\nIsi data diri Anda di bagian pertama, lalu kerjakan soal di bagian berikutnya.';
+    if (quizId) {
+      description += '\n\n[Quiz ID: ' + quizId + ']';
+    }
+    form.setDescription(description);
+
+    // ========================================
+    // SECTION 1: Data Siswa
+    // ========================================
+    var namaItem = form.addTextItem();
+    namaItem.setTitle('Nama Lengkap');
+    namaItem.setRequired(true);
+    namaItem.setHelpText('Masukkan nama lengkap Anda');
+
+    var absenItem = form.addTextItem();
+    absenItem.setTitle('Nomor Absen');
+    absenItem.setRequired(true);
+    absenItem.setHelpText('Masukkan nomor absen Anda');
+
+    var kelasItem = form.addTextItem();
+    kelasItem.setTitle('Kelas');
+    kelasItem.setRequired(true);
+    kelasItem.setHelpText('Contoh: 9A, 10 IPA 2, 7B');
+
+    // ========================================
+    // SECTION 2: Soal-Soal
+    // ========================================
+    var pageBreak = form.addPageBreakItem();
+    pageBreak.setTitle('Soal Ujian');
+    pageBreak.setHelpText('Kerjakan soal berikut dengan teliti. Pilih satu jawaban yang paling tepat.\nTotal nilai: 100');
+
+    for (var i = 0; i < questions.length; i++) {
+      var q = questions[i] || {};
+      var pts = pointsPerQuestion + (i < remainder ? 1 : 0);
+
+      // Bersihkan judul soal dari awalan "undefined.", tanda titik berlebih, atau nomor ganda
+      var cleanTitle = cleanQuestionTitle(q.question) || ('Pertanyaan ' + (i + 1));
+
+      if (q.type === 'essay') {
+        var essayItem = form.addParagraphTextItem();
+        essayItem.setTitle(cleanTitle);
+        essayItem.setRequired(true);
+        essayItem.setPoints(pts);
+      } else {
+        var mcItem = form.addMultipleChoiceItem();
+        mcItem.setTitle(cleanTitle);
+        mcItem.setRequired(true);
+        mcItem.setPoints(pts);
+
+        var safeChoices = sanitizeChoices(q.options, q.answer);
+        var choices = [];
+        for (var j = 0; j < safeChoices.length; j++) {
+          choices.push(mcItem.createChoice(safeChoices[j].text, safeChoices[j].isCorrect));
+        }
+        mcItem.setChoices(choices);
+      }
+    }
+
+    // Acak urutan soal / pilihan jawaban (opsional)
+    var shuffleInfo = applyShuffle(form, !!data.shuffle_questions, !!data.shuffle_options);
+
+    // Pindahkan file form ke folder guru menggunakan API modern moveTo()
+    var formFile = DriveApp.getFileById(form.getId());
+    if (quizId) {
+      formFile.setName('Quiz: ' + title + ' [ID-' + quizId + ']');
+    }
+    formFile.moveTo(guruFolder);
+
+    // Simpan cache mapping published_id -> form_id
+    cacheFormMapping(form);
+
+    return jsonOut({
+      status: 'success',
+      version: SCRIPT_VERSION,
+      script_version: SCRIPT_VERSION,
+      form_url: form.getPublishedUrl(),
+      edit_url: form.getEditUrl(),
+      form_id: form.getId(),
+      folder: folderName,
+      total_points: 100,
+      points_per_question: pointsPerQuestion,
+      shuffle_questions: shuffleInfo.questions,
+      shuffle_options: shuffleInfo.options,
+      shuffle_note: shuffleInfo.message
+    });
+
+  } catch (error) {
+    return jsonOut({
+      status: 'error',
+      version: SCRIPT_VERSION,
+      message: error.toString()
+    });
+  } finally {
+    if (hasLock) {
+      lock.releaseLock();
+    }
+  }
+}
+
+/**
+ * doGet: aksi BACA & PEMELIHARAAN.
+ *   ?action=version                                             -> versi script
+ *   ?action=responses&form_id=ID[&since=ms][&offset=0&limit=1000&summary_only=1&nocache=1]
+ *   ?action=find_form&published_id=PID                          -> cari ID form (edit) dari ID link publik
+ *   ?action=set_shuffle&form_id=ID&questions=1&options=1        -> atur acak soal / pilihan
+ *   ?action=clean_titles&form_id=ID                             -> bersihkan judul soal pada form lama
+ */
+function doGet(e) {
+  var p = (e && e.parameter) || {};
+  try {
+    // Endpoint version tetap terbuka agar frontend dapat mengecek versi kapan saja
+    if (p.action === 'version') {
+      return jsonOut({ status: 'ok', version: SCRIPT_VERSION, script_version: SCRIPT_VERSION });
+    }
+
+    if (!isAuthorized(p.token)) {
+      return jsonOut({ status: 'error', code: 'unauthorized', version: SCRIPT_VERSION, message: 'Token API tidak valid.' });
+    }
+
+    if (p.action === 'responses') {
+      return jsonOut(
+        getFormResponses(
+          p.form_id,
+          p.since,
+          p.offset,
+          p.limit,
+          p.summary_only === '1',
+          p.nocache === '1'
+        )
+      );
+    }
+    if (p.action === 'find_form') return jsonOut(findFormByPublishedId(p.published_id));
+    if (p.action === 'set_shuffle') {
+      var target = FormApp.openById(p.form_id);
+      var info = applyShuffle(target, p.questions === '1', p.options === '1');
+      return jsonOut({
+        status: 'success',
+        version: SCRIPT_VERSION,
+        shuffle_questions: info.questions,
+        shuffle_options: info.options,
+        options_message: info.message
+      });
+    }
+    if (p.action === 'clean_titles' && p.form_id) {
+      var formToClean = FormApp.openById(p.form_id);
+      cleanExistingFormTitles(formToClean);
+      return jsonOut({
+        status: 'success',
+        version: SCRIPT_VERSION,
+        form_id: p.form_id,
+        message: 'Judul soal berhasil dibersihkan.'
+      });
+    }
+
+    return jsonOut({
+      status: 'ok',
+      message: 'soalpintar.ai Form Creator is running!',
+      version: SCRIPT_VERSION,
+      script_version: SCRIPT_VERSION
+    });
+  } catch (error) {
+    return jsonOut({ status: 'error', message: error.toString(), version: SCRIPT_VERSION });
+  }
+}
+
+function jsonOut(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Ambil respons form beserta skor kuis (dioptimasi untuk ribuan siswa).
+ * Mendukung Google Forms API v1 batch, mode summary_only=1, & micro-cache 60 detik.
+ */
+function getFormResponses(formId, sinceMs, offsetParam, limitParam, summaryOnly, noCache) {
+  if (!formId) return { status: 'error', message: 'form_id wajib diisi', version: SCRIPT_VERSION };
+
+  var offset = Math.max(0, parseInt(offsetParam, 10) || 0);
+  var limit = Math.min(2000, Math.max(1, parseInt(limitParam, 10) || 1000));
+  var cacheKey = 'RESP_' + formId + '_' + (sinceMs || '0') + '_' + offset + '_' + limit + '_' + (summaryOnly ? '1' : '0');
+
+  // 1. Cek micro-cache 60 detik agar refresh dashboard berjalan instan
+  var cache = CacheService.getScriptCache();
+  if (!noCache) {
+    var cached = cache.get(cacheKey);
+    if (cached) {
+      try {
+        var parsedCache = JSON.parse(cached);
+        parsedCache.from_cache = true;
+        return parsedCache;
+      } catch (e) {}
+    }
+  }
+
+  // 2. Jalur Cepat: Gunakan Google Forms REST API v1 jika layanan aktif
+  if (typeof Forms !== 'undefined') {
+    try {
+      var fastResult = getResponsesViaFormsApi(formId, sinceMs, offset, limit, summaryOnly);
+      if (fastResult) {
+        try {
+          var serialized = JSON.stringify(fastResult);
+          if (serialized.length < 95000) cache.put(cacheKey, serialized, 60);
+        } catch (e) {}
+        return fastResult;
+      }
+    } catch (apiErr) {
+      // Lanjut ke fallback FormApp jika API belum aktif/gagal
+    }
+  }
+
+  // 3. Jalur Fallback: FormApp teroptimasi (tanpa getItem().getId() berulang dalam loop)
+  var form;
+  try {
+    form = FormApp.openById(formId);
+  } catch (err) {
+    return {
+      status: 'error',
+      code: 'no_access',
+      message: 'Form tidak bisa dibuka oleh akun Google ini. Pastikan form ada di akun yang sama dengan Apps Script.',
+      version: SCRIPT_VERSION
+    };
+  }
+
+  var isQuiz = form.isQuiz();
+  var items = form.getItems();
+  var maxScore = 0;
+  var itemMeta = [];
+  var idItems = { name: null, absen: null, kelas: null };
+
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var title = (it.getTitle() || '').toLowerCase();
+    var type = it.getType();
+
+    if (type === FormApp.ItemType.TEXT) {
+      if (!idItems.name && title.indexOf('nama') !== -1) idItems.name = it;
+      else if (!idItems.absen && title.indexOf('absen') !== -1) idItems.absen = it;
+      else if (!idItems.kelas && title.indexOf('kelas') !== -1) idItems.kelas = it;
+    }
+
+    // Metadata soal hanya diproses pada halaman pertama (offset === 0)
+    if (isQuiz && offset === 0) {
+      var pts = itemPoints(it);
+      maxScore += pts;
+      if (pts > 0) itemMeta.push(describeItem(it, pts));
+    }
+  }
+
+  var responses = sinceMs ? form.getResponses(new Date(Number(sinceMs))) : form.getResponses();
+  var total = responses.length;
+  var end = Math.min(total, offset + limit);
+  var rows = [];
+
+  for (var r = offset; r < end; r++) {
+    var resp = responses[r];
+    var rName = idItems.name ? resp.getResponseForItem(idItems.name) : null;
+    var rAbsen = idItems.absen ? resp.getResponseForItem(idItems.absen) : null;
+    var rKelas = idItems.kelas ? resp.getResponseForItem(idItems.kelas) : null;
+
+    var row = {
+      id: resp.getId(),
+      submitted_at: resp.getTimestamp().toISOString(),
+      email: resp.getRespondentEmail() || null,
+      name: rName ? String(rName.getResponse() || '') : null,
+      absen: rAbsen ? String(rAbsen.getResponse() || '') : null,
+      kelas: rKelas ? String(rKelas.getResponse() || '') : null,
+      score: null
+    };
+
+    if (isQuiz) {
+      var score = 0;
+      var graded = resp.getGradableItemResponses();
+      if (!summaryOnly) row.answers = {};
+
+      for (var g = 0; g < graded.length; g++) {
+        var gScore = Number(graded[g].getScore() || 0);
+        score += gScore;
+
+        if (!summaryOnly) {
+          var raw = graded[g].getResponse();
+          row.answers[String(graded[g].getItem().getId())] = {
+            r: Array.isArray(raw) ? raw.join(' | ') : (raw === null || raw === undefined ? '' : String(raw)),
+            s: gScore
+          };
+        }
+      }
+      row.score = score;
+    }
+    rows.push(row);
+  }
+
+  var output = {
+    status: 'success',
+    version: SCRIPT_VERSION,
+    engine: 'formapp_fast',
+    form_id: form.getId(),
+    title: form.getTitle(),
+    is_quiz: isQuiz,
+    max_score: isQuiz ? maxScore : null,
+    items: offset === 0 ? itemMeta : [],
+    total: total,
+    offset: offset,
+    has_more: end < total,
+    next_offset: end < total ? end : null,
+    accepting_responses: form.isAcceptingResponses(),
+    responses: rows
+  };
+
+  try {
+    var outStr = JSON.stringify(output);
+    if (outStr.length < 95000) cache.put(cacheKey, outStr, 60);
+  } catch (e) {}
+
+  return output;
+}
+
+/**
+ * Helper Jalur Cepat: Mengambil ribuan respons dalam batch call via Google Forms API v1.
+ */
+function getResponsesViaFormsApi(formId, sinceMs, offset, limit, summaryOnly) {
+  var formMeta = Forms.Form.get(formId);
+  var isQuiz = Boolean(formMeta.settings && formMeta.settings.quizSettings && formMeta.settings.quizSettings.isQuiz);
+  var maxScore = 0;
+  var itemMeta = [];
+  var qIdToItemId = {};
+  var idQIds = { name: null, absen: null, kelas: null };
+
+  (formMeta.items || []).forEach(function (item) {
+    var q = item.questionItem && item.questionItem.question;
+    if (!q) return;
+
+    var qId = q.questionId;
+    var decItemId = String(parseInt(item.itemId, 16));
+    qIdToItemId[qId] = decItemId;
+
+    var lowerTitle = (item.title || '').toLowerCase();
+    if (q.textQuestion && !q.textQuestion.paragraph) {
+      if (!idQIds.name && lowerTitle.indexOf('nama') !== -1) idQIds.name = qId;
+      else if (!idQIds.absen && lowerTitle.indexOf('absen') !== -1) idQIds.absen = qId;
+      else if (!idQIds.kelas && lowerTitle.indexOf('kelas') !== -1) idQIds.kelas = qId;
+    }
+
+    if (isQuiz && offset === 0) {
+      var pts = Number((q.grading && q.grading.pointValue) || 0);
+      maxScore += pts;
+      if (pts > 0) {
+        var choices = [];
+        var correctVals = {};
+        if (q.grading && q.grading.correctAnswers && q.grading.correctAnswers.answers) {
+          q.grading.correctAnswers.answers.forEach(function (a) { correctVals[a.value] = true; });
+        }
+        if (q.choiceQuestion && q.choiceQuestion.options) {
+          q.choiceQuestion.options.forEach(function (opt) {
+            choices.push({ value: opt.value, correct: Boolean(correctVals[opt.value]) });
+          });
+        }
+        itemMeta.push({
+          id: decItemId,
+          title: item.title || '',
+          type: q.choiceQuestion ? 'MULTIPLE_CHOICE' : 'PARAGRAPH_TEXT',
+          points: pts,
+          choices: choices
+        });
+      }
+    }
+  });
+
+  var allResponses = [];
+  var pageToken = null;
+  do {
+    var listOpts = { pageSize: 5000 };
+    if (sinceMs) listOpts.filter = 'timestamp >= ' + new Date(Number(sinceMs)).toISOString();
+    if (pageToken) listOpts.pageToken = pageToken;
+
+    var apiRes = Forms.Form.Responses.list(formId, listOpts);
+    if (apiRes.responses && apiRes.responses.length) {
+      allResponses = allResponses.concat(apiRes.responses);
+    }
+    pageToken = apiRes.nextPageToken || null;
+  } while (pageToken && allResponses.length < offset + limit);
+
+  var total = allResponses.length;
+  var end = Math.min(total, offset + limit);
+  var rows = [];
+
+  for (var r = offset; r < end; r++) {
+    var resp = allResponses[r];
+    var ansMap = resp.answers || {};
+
+    function extractText(qId) {
+      if (!qId || !ansMap[qId] || !ansMap[qId].textAnswers || !ansMap[qId].textAnswers.answers) return null;
+      return ansMap[qId].textAnswers.answers.map(function (a) { return a.value || ''; }).join(' | ');
+    }
+
+    var row = {
+      id: resp.responseId,
+      submitted_at: resp.lastSubmittedTime || resp.createTime,
+      email: resp.respondentEmail || null,
+      name: extractText(idQIds.name),
+      absen: extractText(idQIds.absen),
+      kelas: extractText(idQIds.kelas),
+      score: isQuiz ? Number(resp.totalScore || 0) : null
+    };
+
+    if (isQuiz && !summaryOnly) {
+      row.answers = {};
+      Object.keys(ansMap).forEach(function (qId) {
+        var decId = qIdToItemId[qId];
+        if (!decId) return;
+        var aObj = ansMap[qId];
+        var valStr = (aObj.textAnswers && aObj.textAnswers.answers)
+          ? aObj.textAnswers.answers.map(function (x) { return x.value || ''; }).join(' | ')
+          : '';
+        row.answers[decId] = {
+          r: valStr,
+          s: Number((aObj.grade && aObj.grade.score) || 0)
+        };
+      });
+    }
+
+    rows.push(row);
+  }
+
+  var formObj = FormApp.openById(formId);
+  return {
+    status: 'success',
+    version: SCRIPT_VERSION,
+    engine: 'forms_api_v1',
+    form_id: formId,
+    title: (formMeta.info && formMeta.info.title) || formObj.getTitle(),
+    is_quiz: isQuiz,
+    max_score: isQuiz ? maxScore : null,
+    items: offset === 0 ? itemMeta : [],
+    total: total,
+    offset: offset,
+    has_more: Boolean(pageToken) || end < total,
+    next_offset: (Boolean(pageToken) || end < total) ? end : null,
+    accepting_responses: formObj.isAcceptingResponses(),
+    responses: rows
+  };
+}
+
+function itemPoints(it) {
+  var T = FormApp.ItemType;
+  switch (it.getType()) {
+    case T.MULTIPLE_CHOICE: return it.asMultipleChoiceItem().getPoints();
+    case T.CHECKBOX: return it.asCheckboxItem().getPoints();
+    case T.LIST: return it.asListItem().getPoints();
+    case T.TEXT: return it.asTextItem().getPoints();
+    case T.PARAGRAPH_TEXT: return it.asParagraphTextItem().getPoints();
+    case T.SCALE: return it.asScaleItem().getPoints();
+    case T.DATE: return it.asDateItem().getPoints();
+    case T.TIME: return it.asTimeItem().getPoints();
+    case T.DATETIME: return it.asDateTimeItem().getPoints();
+    case T.DURATION: return it.asDurationItem().getPoints();
+    case T.GRID: return it.asGridItem().getPoints();
+    case T.CHECKBOX_GRID: return it.asCheckboxGridItem().getPoints();
+    default: return 0;
+  }
+}
+
+/** Metadata soal untuk analisis butir: judul, poin, pilihan & kunci jawaban. */
+function describeItem(it, points) {
+  var T = FormApp.ItemType;
+  var meta = { id: String(it.getId()), title: it.getTitle(), type: String(it.getType()), points: points, choices: [] };
+  var choices = null;
+  if (it.getType() === T.MULTIPLE_CHOICE) choices = it.asMultipleChoiceItem().getChoices();
+  else if (it.getType() === T.CHECKBOX) choices = it.asCheckboxItem().getChoices();
+  else if (it.getType() === T.LIST) choices = it.asListItem().getChoices();
+  if (choices) {
+    for (var c = 0; c < choices.length; c++) {
+      meta.choices.push({ value: choices[c].getValue(), correct: choices[c].isCorrectAnswer() });
+    }
+  }
+  return meta;
+}
+
+/**
+ * Acak urutan soal (FormApp) dan, jika layanan "Google Forms API" diaktifkan,
+ * acak urutan pilihan jawaban setiap soal pilihan ganda.
+ */
+function applyShuffle(form, shuffleQuestions, shuffleOptions) {
+  var messages = [];
+  var result = { questions: shuffleQuestions, options: false, message: '' };
+  form.setShuffleQuestions(shuffleQuestions);
+
+  if (shuffleQuestions) {
+    messages.push('Catatan: Google Forms juga mengacak urutan isian identitas siswa (Nama/Absen/Kelas) saat acak soal aktif.');
+  }
+
+  if (typeof Forms === 'undefined') {
+    if (shuffleOptions) {
+      messages.push('Layanan "Google Forms API" belum diaktifkan di Apps Script, pilihan jawaban tidak diacak.');
+    }
+    result.message = messages.join(' ');
+    return result;
+  }
+
+  try {
+    var full = Forms.Form.get(form.getId());
+    var requests = [];
+    (full.items || []).forEach(function (item, index) {
+      var q = item.questionItem && item.questionItem.question;
+      if (q && q.choiceQuestion) {
+        requests.push({
+          updateItem: {
+            item: { questionItem: { question: { choiceQuestion: { shuffle: shuffleOptions } } } },
+            location: { index: index },
+            updateMask: 'questionItem.question.choiceQuestion.shuffle'
+          }
+        });
+      }
+    });
+    if (requests.length) Forms.Form.batchUpdate({ requests: requests }, form.getId());
+    result.options = shuffleOptions;
+  } catch (err) {
+    messages.push('Gagal mengatur acak pilihan: ' + err);
+  }
+
+  result.message = messages.join(' ');
+  return result;
+}
+
+/**
+ * Untuk form yang di-import manual (hanya punya link publik /forms/d/e/PID/viewform):
+ * Cek cache terlebih dahulu, lalu cari form di Google Drive jika belum tercatat.
+ */
+function findFormByPublishedId(publishedId) {
+  if (!publishedId) return { status: 'error', message: 'published_id wajib diisi', version: SCRIPT_VERSION };
+
+  var props = PropertiesService.getScriptProperties();
+  var cachedId = props.getProperty('PUB_MAP_' + publishedId);
+
+  // 1. Cek dari cache terlebih dahulu (0 ms)
+  if (cachedId) {
+    try {
+      var cachedForm = FormApp.openById(cachedId);
+      return {
+        status: 'success',
+        version: SCRIPT_VERSION,
+        form_id: cachedForm.getId(),
+        title: cachedForm.getTitle(),
+        is_quiz: cachedForm.isQuiz(),
+        from_cache: true
+      };
+    } catch (e) {
+      props.deleteProperty('PUB_MAP_' + publishedId);
+    }
+  }
+
+  // 2. Fallback pencarian di Google Drive (dibatasi maksimal 250 file terbaru agar tidak timeout)
+  var files = DriveApp.getFilesByType(MimeType.GOOGLE_FORMS);
+  var checked = 0;
+  while (files.hasNext() && checked < 250) {
+    var file = files.next();
+    checked++;
+    try {
+      var f = FormApp.openById(file.getId());
+      cacheFormMapping(f);
+      if ((f.getPublishedUrl() || '').indexOf(publishedId) !== -1) {
+        return {
+          status: 'success',
+          version: SCRIPT_VERSION,
+          form_id: f.getId(),
+          title: f.getTitle(),
+          is_quiz: f.isQuiz()
+        };
+      }
+    } catch (err) {
+      // Lewati form yang tidak bisa dibuka
+    }
+  }
+
+  return {
+    status: 'error',
+    code: 'not_found',
+    message: 'Form tidak ditemukan di Google Drive akun ini (dicek ' + checked + ' form).',
+    version: SCRIPT_VERSION
+  };
+}

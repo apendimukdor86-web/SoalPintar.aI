@@ -23,7 +23,7 @@ const tabTitles: Record<string, { category: string; title: string }> = {
   rekap: { category: 'Evaluasi & Analisis', title: '7. Rekap & Analisis Nilai Siswa' },
   pelanggaran: { category: 'Evaluasi & Analisis', title: '8. Riwayat Pelanggaran (Bukti Kejujuran)' },
   teacher_users: { category: 'Pengaturan & Aplikasi', title: 'Pengguna Guru (Daftar & Manajemen Akun)' },
-  settings_gas: { category: 'Pengaturan & Aplikasi', title: 'Pengaturan Web App Google Apps Script (Code.gs v3.3)' },
+  settings_gas: { category: 'Pengaturan & Aplikasi', title: 'Pengaturan Web App Google Apps Script (Code.gs v3.5.2)' },
   clear_data: { category: 'Pengaturan & Aplikasi', title: 'Clear Data, Log & Histori' },
   download: { category: 'Pengaturan & Aplikasi', title: '9. Download Aplikasi Guru & Siswa' },
   paket: { category: 'Pengaturan & Aplikasi', title: '10. Status Paket & Langganan' },

@@ -15,19 +15,30 @@ import {
   X,
 } from 'lucide-react';
 import { QuestionPackage, StudentViolationLog, ExamTokenConfig } from '../types';
+import { ManualGoogleFormEntry } from './GoogleFormsView';
 
 interface DashboardViewProps {
   teacherName?: string;
   packages: QuestionPackage[];
+  manualForms?: ManualGoogleFormEntry[];
   violations: StudentViolationLog[];
   examConfig: ExamTokenConfig;
   onNavigate: (tabId: string) => void;
   onSelectPackageForDistribution: (pkg: QuestionPackage) => void;
 }
 
+const isValidGoogleFormUrl = (url?: string): boolean => {
+  if (!url || typeof url !== 'string') return false;
+  return (
+    (url.startsWith('https://docs.google.com/forms/') || url.startsWith('https://forms.gle/')) &&
+    !url.includes('contoh-')
+  );
+};
+
 export const DashboardView: React.FC<DashboardViewProps> = ({
   teacherName = 'Yana Periyana',
   packages,
+  manualForms = [],
   violations,
   examConfig,
   onNavigate,
@@ -43,14 +54,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Dynamic calculations from database
   const totalQuiz = packages.length;
   const totalSoal = packages.reduce((acc, p) => acc + (p.questions?.length || 0), 0);
-  const googleFormsCount = packages.filter(
-    (p) => Boolean(p.googleFormUrl) || Boolean(p.googleAppsScript) || p.title.toLowerCase().includes('ipa') || p.title.toLowerCase().includes('segitiga') || p.id === 'pkg-mat-smp-7'
-  ).length || totalQuiz;
-  const tokenAktif = totalQuiz > 0 ? `${totalQuiz}/${totalQuiz}` : '0/0';
+  const linkedPkgFormsCount = packages.filter((p) => isValidGoogleFormUrl(p.googleFormUrl)).length;
+  const googleFormsCount = linkedPkgFormsCount + manualForms.length;
+
+  const { activeTokensCount, totalTokensCount } = (() => {
+    try {
+      const saved = localStorage.getItem('soalpintar_created_tokens_v2');
+      if (saved !== null) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter((t) => t && typeof t === 'object' && t.token);
+          const active = valid.filter((t) => t.isActive !== false).length;
+          return { activeTokensCount: active, totalTokensCount: valid.length };
+        }
+      }
+    } catch {
+      // Ignore storage error
+    }
+    const hasDefault = Boolean(examConfig.token && examConfig.token.trim());
+    return { activeTokensCount: hasDefault ? 1 : 0, totalTokensCount: hasDefault ? 1 : 0 };
+  })();
 
   // Check violations in the past 24 hours
   const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-  const recentViolations = violations.filter((v) => v.timestamp > oneDayAgo);
+  const recentViolations = violations.filter((v) => Number(v.timestamp) > oneDayAgo);
 
   const handleSaveUts = (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,10 +179,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div>
             <div className="text-3xl font-extrabold font-mono text-white tracking-tight">
-              {totalQuiz > 0 ? (
+              {totalTokensCount > 0 ? (
                 <>
-                  {totalQuiz}
-                  <span className="text-lg font-normal text-slate-500">/{totalQuiz}</span>
+                  {activeTokensCount}
+                  <span className="text-lg font-normal text-slate-500">/{totalTokensCount}</span>
                 </>
               ) : (
                 '0/0'
@@ -197,23 +224,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         ) : (
           <div className="space-y-2 pt-1">
-            {recentViolations.slice(0, 3).map((v) => (
-              <div
-                key={v.id}
-                className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800/80 text-xs"
-              >
-                <div>
-                  <span className="font-semibold text-slate-200">{v.studentName}</span>
-                  <span className="text-slate-500 ml-2">({v.kelas})</span>
+            {recentViolations.slice(0, 3).map((v) => {
+              const dt = new Date(Number(v.timestamp) || Date.now());
+              const timeStr = isNaN(dt.getTime())
+                ? '-'
+                : dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+              return (
+                <div
+                  key={v.id}
+                  className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800/80 text-xs"
+                >
+                  <div>
+                    <span className="font-semibold text-slate-200">{v.studentName || 'Siswa'}</span>
+                    <span className="text-slate-500 ml-2">({v.kelas || '-'})</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-rose-400 font-semibold">{v.type}</span>
+                    <span className="text-slate-500 font-mono text-[11px]">
+                      {timeStr}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-rose-400 font-semibold">{v.type}</span>
-                  <span className="text-slate-500 font-mono text-[11px]">
-                    {new Date(v.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -347,11 +380,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Belum ada kuis yang dibuat. Klik Generate Soal AI untuk membuat kuis baru!
               </div>
             ) : (
-              packages.slice(0, 5).map((pkg, idx) => {
-                // Short badge display: SMP Kelas 7 or SMP
-                const isFirst = idx === 0;
-                const badgeTop = pkg.grade.includes('SMA') ? 'SMA' : 'SMP';
-                const badgeSub = pkg.grade.includes('7') ? 'Kelas 7' : pkg.grade.includes('8') ? 'Kelas 8' : pkg.grade.includes('9') ? 'Kelas 9' : '';
+              packages.slice(0, 5).map((pkg) => {
+                const gradeStr = String(pkg.grade || 'SMP');
+                const titleStr = String(pkg.title || pkg.subject || 'Kuis');
+                const subjectStr = String(pkg.subject || 'Umum');
+                const badgeTop = gradeStr.includes('SMA') ? 'SMA' : gradeStr.includes('SD') ? 'SD' : 'SMP';
+                const badgeSub = gradeStr.includes('7')
+                  ? 'Kelas 7'
+                  : gradeStr.includes('8')
+                  ? 'Kelas 8'
+                  : gradeStr.includes('9')
+                  ? 'Kelas 9'
+                  : '';
+                const hasRealForm = isValidGoogleFormUrl(pkg.googleFormUrl);
 
                 return (
                   <div
@@ -370,22 +411,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                       <div>
                         <h4 className="text-xs font-bold text-white group-hover:text-indigo-300 transition-colors">
-                          {pkg.subject === 'Ilmu Pengetahuan Alam (IPA)' ? 'IPA' : pkg.title.split(':')[0].length < 25 ? pkg.title.split(':')[0] : pkg.subject}
+                          {subjectStr === 'Ilmu Pengetahuan Alam (IPA)'
+                            ? 'IPA'
+                            : titleStr.split(':')[0].length < 25
+                            ? titleStr.split(':')[0]
+                            : subjectStr}
                         </h4>
                         <div className="text-[11px] text-slate-400 mt-0.5">
-                          {pkg.questions.length} soal · 1 week ago
+                          {(pkg.questions || []).length} soal · {pkg.timeAgo || pkg.createdAt || 'Baru saja'}
                         </div>
                       </div>
                     </div>
 
                     {/* Right Tag Badges */}
                     <div className="flex items-center gap-2 self-start sm:self-auto">
-                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-900/60 px-2 py-0.5 rounded-md">
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        Form
-                      </span>
+                      {hasRealForm ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-900/60 px-2 py-0.5 rounded-md">
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          Form
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-semibold text-slate-400 bg-slate-800/70 border border-slate-700/60 px-2 py-0.5 rounded-md">
+                          CBT Lokal
+                        </span>
+                      )}
                       <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/40 border border-emerald-900/40 px-2 py-0.5 rounded-md">
-                        Published
+                        {pkg.status || 'Siap'}
                       </span>
                     </div>
                   </div>

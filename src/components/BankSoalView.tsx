@@ -41,10 +41,12 @@ interface BankSoalViewProps {
   onDistributePackage: (pkg: QuestionPackage) => void;
   onGoToAiGenerator: () => void;
   webAppUrl?: string;
+  gasApiSecret?: string;
   guruName?: string;
   shuffleQuestions?: boolean;
   shuffleOptions?: boolean;
   onOpenGasSettings?: () => void;
+  onUpdateWebAppUrl?: (url: string) => void;
 }
 
 export const BankSoalView: React.FC<BankSoalViewProps> = ({
@@ -55,10 +57,12 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
   onDistributePackage,
   onGoToAiGenerator,
   webAppUrl = '',
+  gasApiSecret = '',
   guruName = 'Apendi Mukdor, S.Pd.',
   shuffleQuestions = true,
   shuffleOptions = false,
   onOpenGasSettings,
+  onUpdateWebAppUrl,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSubject, setSelectedSubject] = useState('Semua');
@@ -218,26 +222,31 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
   const [importWordPdfSubject, setImportWordPdfSubject] = useState('Matematika');
   const [importWordPdfGrade, setImportWordPdfGrade] = useState('SMP');
 
-  const subjects = ['Semua', ...Array.from(new Set(packages.map((p) => p.subject)))];
+  const subjects = ['Semua', ...Array.from(new Set(packages.map((p) => String(p?.subject || 'Umum'))))];
   const uniqueGrades = Array.from(
     new Set(
       packages
-        .map((p) => (p.grade.includes('SMP') ? 'SMP' : p.grade.includes('SD') ? 'SD' : p.grade))
-        .filter((g) => !g.includes('SMA') && !g.includes('SMK') && !g.includes('Kelas 10') && !g.includes('Kelas 11') && !g.includes('Kelas 12'))
+        .map((p) => {
+          const g = String(p?.grade || '');
+          return g.includes('SMP') ? 'SMP' : g.includes('SD') ? 'SD' : g;
+        })
+        .filter((g) => g && !g.includes('SMA') && !g.includes('SMK') && !g.includes('Kelas 10') && !g.includes('Kelas 11') && !g.includes('Kelas 12'))
     )
   );
   const grades = ['Semua', ...Array.from(new Set(['SMP', 'SD', ...uniqueGrades]))];
 
   const filteredPackages = packages.filter((pkg) => {
+    const q = searchQuery.toLowerCase();
     const matchSearch =
-      pkg.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      pkg.topic.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      pkg.subject.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchSubject = selectedSubject === 'Semua' || pkg.subject === selectedSubject;
+      String(pkg?.title || '').toLowerCase().includes(q) ||
+      String(pkg?.topic || '').toLowerCase().includes(q) ||
+      String(pkg?.subject || '').toLowerCase().includes(q);
+    const matchSubject = selectedSubject === 'Semua' || pkg?.subject === selectedSubject;
+    const pkgGrade = String(pkg?.grade || '');
     const matchGrade =
       selectedGrade === 'Semua' ||
-      pkg.grade === selectedGrade ||
-      pkg.grade.toLowerCase().includes(selectedGrade.toLowerCase());
+      pkgGrade === selectedGrade ||
+      pkgGrade.toLowerCase().includes(selectedGrade.toLowerCase());
     return matchSearch && matchSubject && matchGrade;
   });
 
@@ -281,19 +290,12 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
       const line = rawLines[i].trim();
       if (!line) continue;
 
-      const qMatch = line.match(/^(?:(?:No\.?\s*)?(\d+)[.)\s]+)(.*)/i);
-      const optMatch = line.match(/^([A-Da-d])[.)\s]+(.*)/);
-      const keyMatch = line.match(/^(?:Kunci(?:\s+Jawaban)?|Jawaban|Ans)\s*[:=]\s*([A-Da-d])/i);
+      const optMatch = line.match(/^([A-Ea-e])[.)\s]+(.*)/);
+      const keyMatch = line.match(/^(?:Kunci(?:\s+Jawaban)?|Jawaban|Ans)\s*[:=]\s*([A-Ea-e])/i);
       const explMatch = line.match(/^(?:Pembahasan|Penjelasan|Explanation)\s*[:=]\s*(.*)/i);
+      const qMatch = line.match(/^(?:(?:No\.?\s*)?(\d+)[.)\s]+)(.*)/i);
 
-      if (qMatch && !line.startsWith('A.') && !line.startsWith('B.') && !line.startsWith('C.') && !line.startsWith('D.')) {
-        flushCurrentQ();
-        currentQ = {
-          question: qMatch[2] || 'Pertanyaan...',
-          correctAnswer: 'A',
-          explanation: '',
-        };
-      } else if (optMatch && currentQ) {
+      if (optMatch && currentQ) {
         currentOptions.push({
           key: optMatch[1].toUpperCase(),
           text: optMatch[2] || '',
@@ -302,6 +304,13 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
         currentQ.correctAnswer = keyMatch[1].toUpperCase();
       } else if (explMatch && currentQ) {
         currentQ.explanation = explMatch[1];
+      } else if (qMatch) {
+        flushCurrentQ();
+        currentQ = {
+          question: qMatch[2] || 'Pertanyaan...',
+          correctAnswer: 'A',
+          explanation: '',
+        };
       } else if (currentQ) {
         if (currentOptions.length > 0) {
           currentOptions[currentOptions.length - 1].text += ' ' + line;
@@ -395,16 +404,37 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
 
   const handleSaveManual = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    if (!newTitle.trim()) {
+      showToast('Judul paket soal wajib diisi.');
+      return;
+    }
 
+    const validQuestions = manualQuestions
+      .filter((q) => q.question.trim() !== '')
+      .map((q, idx) => ({
+        ...q,
+        number: idx + 1,
+        question: q.question.trim(),
+      }));
+
+    if (validQuestions.length === 0) {
+      showToast('Minimal harus ada 1 butir pertanyaan yang tidak kosong.');
+      return;
+    }
+
+    const batch = Math.random().toString(36).substring(2, 10).toUpperCase();
     const newPkg: QuestionPackage = {
       id: 'pkg-' + Date.now(),
-      title: newTitle,
-      subject: newSubject,
+      title: newTitle.trim(),
+      subject: newSubject.trim() || 'Umum',
       grade: newGrade,
-      topic: newTopic || 'Materi Umum',
-      createdAt: new Date().toISOString().split('T')[0],
-      questions: manualQuestions.filter((q) => q.question.trim() !== ''),
+      topic: newTopic.trim() || 'Materi Umum',
+      status: 'Published',
+      batchCode: batch,
+      timeAgo: 'Baru saja',
+      optionCount: 4,
+      createdAt: new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }),
+      questions: validQuestions,
       googleAppsScript: 'ready',
     };
 
@@ -412,6 +442,25 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
     setShowAddModal(false);
     setNewTitle('');
     setNewTopic('');
+    setManualQuestions([
+      {
+        id: 'mq-' + Date.now(),
+        number: 1,
+        type: 'pilihan_ganda',
+        stimulus: '',
+        question: '',
+        options: [
+          { key: 'A', text: '' },
+          { key: 'B', text: '' },
+          { key: 'C', text: '' },
+          { key: 'D', text: '' },
+        ],
+        correctAnswer: 'A',
+        explanation: '',
+        cognitiveLevel: 'C3 - Aplikasi',
+        points: 10,
+      },
+    ]);
     showToast(`Paket soal "${newPkg.title}" berhasil ditambahkan ke Bank Soal.`);
   };
 
@@ -520,8 +569,11 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
       return;
     }
 
-    // Save URL to localStorage
+    // Save URL to localStorage & sync to App.tsx state
     localStorage.setItem('soalpintar_gas_webapp_url', targetUrl);
+    if (onUpdateWebAppUrl) {
+      onUpdateWebAppUrl(targetUrl);
+    }
 
     setIsCreatingForm(true);
     setFormError(null);
@@ -533,7 +585,9 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
       const optionsArray = (q.options || []).map((o) => `${o.key}. ${o.text}`);
       let correctIndex = (q.options || []).findIndex((o) => o.key === q.correctAnswer || o.text === q.correctAnswer);
       if (correctIndex === -1) correctIndex = 0;
-      const cleanQuestion = q.question.replace(/^\s*(?:undefined\.?\s*|\.\s+|(?:No\.?\s*)?\d+\s*[.)]\s*)+/i, '').trim();
+      const cleanQuestion = String(q.question || '')
+        .replace(/^[\s\u00A0]*(?:undefined\s*\.?\s*|\.+\s+|(?:no\.?\s*)?\d{1,3}[\.\)\-:]\s+)+/i, '')
+        .trim();
 
       return {
         number: '',
@@ -554,6 +608,7 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           webAppUrl: targetUrl,
+          apiSecret: gasApiSecret || undefined,
           title: selectedPkgForForm.title,
           quiz_id: 'pkg-' + selectedPkgForForm.id.replace(/[^a-zA-Z0-9]/g, '').slice(-8),
           guru_name: guruName || 'Guru',
@@ -564,13 +619,19 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
         }),
       });
 
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = rawText && !rawText.trim().startsWith('<') ? JSON.parse(rawText) : null;
+      } catch {
+        data = null;
+      }
       setFormCreationStep(4);
 
-      if (data.success && data.form_url) {
+      if (res.ok && data?.success && data.form_url) {
         const result = {
           formUrl: data.form_url,
-          editUrl: data.edit_url,
+          editUrl: data.edit_url || '',
           folder: data.folder || `v2-soalpintar.ai/${selectedPkgForForm.subject}`,
           isExisting: data.data?.is_existing || false,
           needsScriptUpdate: Boolean(data.needsScriptUpdate),
@@ -581,7 +642,7 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
         const updated: QuestionPackage = {
           ...selectedPkgForForm,
           googleFormUrl: data.form_url,
-          googleFormEditUrl: data.edit_url,
+          googleFormEditUrl: data.edit_url || '',
           driveFolderUrl: `https://drive.google.com/drive/folders/v2-soalpintar-ai`,
           formId: data.form_id || 'form-' + Date.now(),
         };
@@ -591,7 +652,7 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
         }
         showToast('Google Form berhasil dibuat di Google Drive Anda!');
       } else {
-        throw new Error(data.message || 'Gagal membuat Google Form via Apps Script.');
+        throw new Error(data?.message || `Gagal membuat Google Form (HTTP ${res.status}).`);
       }
     } catch (err: any) {
       console.error(err);
@@ -615,11 +676,19 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
           questions: pkg.questions,
         }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = rawText && !rawText.trim().startsWith('<') ? JSON.parse(rawText) : null;
+      } catch {
+        data = null;
+      }
+      if (res.ok && data?.success && data.script) {
         setCustomGasScript(data.script);
         setSelectedPkgForForm(pkg);
         setShowGasScriptModal(true);
+      } else {
+        showToast(data?.message || `Gagal membuat script (HTTP ${res.status}).`);
       }
     } catch (e: any) {
       showToast('Error: ' + e.message);
@@ -1100,11 +1169,17 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
                     onChange={(e) => setEditingPackage({ ...editingPackage, grade: e.target.value })}
                     className="w-full text-xs bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white focus:outline-none focus:border-indigo-500"
                   >
+                    {!['SD', 'SMP', 'SMP Kelas 7', 'SMP Kelas 8', 'SMP Kelas 9', 'Kelas VII SMP', 'Kelas VIII SMP', 'Kelas IX SMP'].includes(editingPackage.grade) && (
+                      <option value={editingPackage.grade}>{editingPackage.grade}</option>
+                    )}
                     <option value="SD">SD</option>
                     <option value="SMP">SMP</option>
                     <option value="SMP Kelas 7">SMP Kelas 7</option>
                     <option value="SMP Kelas 8">SMP Kelas 8</option>
                     <option value="SMP Kelas 9">SMP Kelas 9</option>
+                    <option value="Kelas VII SMP">Kelas VII SMP</option>
+                    <option value="Kelas VIII SMP">Kelas VIII SMP</option>
+                    <option value="Kelas IX SMP">Kelas IX SMP</option>
                   </select>
                 </div>
               </div>
@@ -1232,52 +1307,73 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
                 />
               </div>
 
-              {/* 4 Options */}
-              <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-300 block">Pilihan Jawaban (A, B, C, D)</label>
-                {editingQuestion.question.options?.map((opt, optIdx) => (
-                  <div key={opt.key} className="flex items-center gap-2">
-                    <span className="w-6 text-center font-bold font-mono text-purple-400 text-xs">
-                      {opt.key}.
-                    </span>
-                    <input
-                      type="text"
-                      required
-                      value={opt.text}
-                      onChange={(e) => {
-                        const newOpts = [...(editingQuestion.question.options || [])];
-                        newOpts[optIdx] = { ...newOpts[optIdx], text: e.target.value };
-                        setEditingQuestion({
-                          ...editingQuestion,
-                          question: { ...editingQuestion.question, options: newOpts },
-                        });
-                      }}
-                      className="flex-1 text-xs bg-slate-900 border border-slate-700 rounded-lg p-2 text-white focus:outline-none focus:border-emerald-500"
-                      placeholder={`Pilihan ${opt.key}...`}
-                    />
-                  </div>
-                ))}
-              </div>
+              {/* Multiple-choice Options (only when question has options) */}
+              {editingQuestion.question.options && editingQuestion.question.options.length > 0 && (
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-300 block">
+                    Pilihan Jawaban ({editingQuestion.question.options.map((o) => o.key).join(', ')})
+                  </label>
+                  {editingQuestion.question.options.map((opt, optIdx) => (
+                    <div key={opt.key} className="flex items-center gap-2">
+                      <span className="w-6 text-center font-bold font-mono text-purple-400 text-xs">
+                        {opt.key}.
+                      </span>
+                      <input
+                        type="text"
+                        required
+                        value={opt.text}
+                        onChange={(e) => {
+                          const newOpts = [...(editingQuestion.question.options || [])];
+                          newOpts[optIdx] = { ...newOpts[optIdx], text: e.target.value };
+                          setEditingQuestion({
+                            ...editingQuestion,
+                            question: { ...editingQuestion.question, options: newOpts },
+                          });
+                        }}
+                        className="flex-1 text-xs bg-slate-900 border border-slate-700 rounded-lg p-2 text-white focus:outline-none focus:border-emerald-500"
+                        placeholder={`Pilihan ${opt.key}...`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* Cognitive level, Points, Answer Key */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
                 <div>
                   <label className="text-xs font-semibold text-slate-300 block mb-1">Kunci Jawaban Benar</label>
-                  <select
-                    value={editingQuestion.question.correctAnswer}
-                    onChange={(e) =>
-                      setEditingQuestion({
-                        ...editingQuestion,
-                        question: { ...editingQuestion.question, correctAnswer: e.target.value },
-                      })
-                    }
-                    className="w-full text-xs bg-slate-900 border border-emerald-600/80 rounded-xl p-2.5 text-emerald-300 font-bold font-mono focus:outline-none"
-                  >
-                    <option value="A">Kunci: A</option>
-                    <option value="B">Kunci: B</option>
-                    <option value="C">Kunci: C</option>
-                    <option value="D">Kunci: D</option>
-                  </select>
+                  {editingQuestion.question.options && editingQuestion.question.options.length > 0 ? (
+                    <select
+                      value={editingQuestion.question.correctAnswer}
+                      onChange={(e) =>
+                        setEditingQuestion({
+                          ...editingQuestion,
+                          question: { ...editingQuestion.question, correctAnswer: e.target.value },
+                        })
+                      }
+                      className="w-full text-xs bg-slate-900 border border-emerald-600/80 rounded-xl p-2.5 text-emerald-300 font-bold font-mono focus:outline-none"
+                    >
+                      {editingQuestion.question.options.map((opt) => (
+                        <option key={opt.key} value={opt.key}>
+                          Kunci: {opt.key}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      required
+                      value={editingQuestion.question.correctAnswer}
+                      onChange={(e) =>
+                        setEditingQuestion({
+                          ...editingQuestion,
+                          question: { ...editingQuestion.question, correctAnswer: e.target.value },
+                        })
+                      }
+                      placeholder="Tuliskan kunci jawaban..."
+                      className="w-full text-xs bg-slate-900 border border-emerald-600/80 rounded-xl p-2.5 text-emerald-300 font-semibold focus:outline-none"
+                    />
+                  )}
                 </div>
 
                 <div>
@@ -1525,10 +1621,10 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
                     <div className="p-3 rounded-lg bg-amber-950/60 border border-amber-700/70 text-[11px] text-amber-200 space-y-1.5">
                       <div className="font-bold text-amber-300 flex items-center gap-1.5">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>Perbarui Script Code.gs ke Versi 3.3</span>
+                        <span>Perbarui Script Code.gs ke Versi 3.5.2</span>
                       </div>
                       <p className="leading-relaxed">
-                        Web App Google Apps Script Anda masih memakai versi lama yang menambahkan tanda titik/nomor sebelum soal. Salin <strong>Code.gs v3.3</strong> di menu Pengaturan Web App lalu pilih <strong>Deploy &gt; Manage deployments &gt; New version</strong> agar soal tampil bersih tanpa awalan apa pun.
+                        Web App Google Apps Script Anda masih memakai versi lama. Salin <strong>Code.gs v3.5.2</strong> di menu Pengaturan Web App lalu pilih <strong>Deploy &gt; Manage deployments &gt; New version</strong> agar mendapat auto-fallback FormApp bebas error 403, LockService, dan cache find_form.
                       </p>
                       {onOpenGasSettings && (
                         <button
@@ -1585,7 +1681,7 @@ export const BankSoalView: React.FC<BankSoalViewProps> = ({
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      URL Web App Google Apps Script (Code.gs v3.3):
+                      URL Web App Google Apps Script (Code.gs v3.5.2):
                     </label>
                     <input
                       type="url"

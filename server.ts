@@ -68,6 +68,8 @@ export interface LiveExamRoom {
   maxViolations: number;
   waitingRoomEnabled: boolean;
   isExamStarted: boolean;
+  isActive?: boolean;
+  expiryDateTime?: string;
   googleFormUrl: string;
   googleFormEditUrl?: string;
   driveFolderUrl?: string;
@@ -160,6 +162,7 @@ function createInitialSeededRooms(): Record<string, LiveExamRoom> {
       maxViolations: 3,
       waitingRoomEnabled: false,
       isExamStarted: true,
+      isActive: true,
       googleFormUrl: '',
       googleFormEditUrl: '',
       driveFolderUrl: 'https://drive.google.com/drive/my-drive',
@@ -178,6 +181,7 @@ function createInitialSeededRooms(): Record<string, LiveExamRoom> {
       maxViolations: 3,
       waitingRoomEnabled: false,
       isExamStarted: true,
+      isActive: true,
       googleFormUrl: '',
       googleFormEditUrl: '',
       driveFolderUrl: 'https://drive.google.com/drive/my-drive',
@@ -536,11 +540,11 @@ Berikan format JSON terstruktur.`;
 // API 2: Export Google Apps Script (GAS) Generator
 app.post('/api/generate-gas-script', (req: Request, res: Response) => {
   try {
-    const { title, questions } = req.body;
+    const { title, questions } = req.body || {};
     const formTitle = title || 'Kuis Soalpintar.ai';
 
     const gasCode = `/**
- * Google Apps Script - Otomatisasi Pembuatan Google Form Kuis
+ * Google Apps Script - Otomatisasi Pembuatan Google Form Kuis (Standar v3.5.2)
  * Dihasilkan oleh Soalpintar.ai (v2-soalpintar.ai)
  *
  * CARA MENGGUNAKAN:
@@ -549,67 +553,82 @@ app.post('/api/generate-gas-script', (req: Request, res: Response) => {
  * 3. Hapus kode bawaan, lalu Tempel (Paste) seluruh kode di bawah ini.
  * 4. Klik tombol "Simpan" (Ctrl+S) lalu klik tombol "Jalankan" (Run).
  * 5. Berikan izin otorisasi Google Drive / Forms saat diminta pertama kali.
- * 6. Formulir kuis otomatis tersimpan di Google Drive Anda beserta kunci jawabannya!
+ * 6. Formulir kuis otomatis tersimpan di folder v2-soalpintar.ai di Google Drive Anda!
  */
 
+function cleanQuestionTitle(str) {
+  return String(str || '')
+    .replace(/^[\\s\\u00A0]*(?:undefined\\s*\\.?\\s*|\\.+\\s+|(?:no\\.?\\s*)?\\d{1,3}[\\.\\)\\-:]\\s+)+/i, '')
+    .trim();
+}
+
+function sanitizeChoices(rawOptions, correctAnswer) {
+  var list = Array.isArray(rawOptions) ? rawOptions : [];
+  var seen = {};
+  var cleaned = [];
+  for (var j = 0; j < list.length; j++) {
+    var opt = list[j] || {};
+    var text = String(opt.text || '').trim();
+    if (!text) text = 'Opsi ' + (j + 1);
+    var label = (opt.key ? opt.key + '. ' : '') + text;
+    while (seen[label]) {
+      label += '\\u200B';
+    }
+    seen[label] = true;
+    var isCorrect = (opt.key === correctAnswer || opt.text === correctAnswer);
+    cleaned.push({ text: label, isCorrect: isCorrect });
+  }
+  if (cleaned.length === 0) {
+    cleaned.push({ text: 'Pilihan A', isCorrect: true });
+  }
+  return cleaned;
+}
+
 function buatKuisOtomatisSoalpintar() {
-  // 1. Buat Google Form baru
   var form = FormApp.create(${JSON.stringify(formTitle + ' [Soalpintar.ai]')});
   form.setDescription("Asesmen ini disinkronkan dengan Portal Ujian Aman Anti-Curang Soalpintar.ai.\\nHarap kerjakan dengan teliti dan jujur.");
   form.setIsQuiz(true);
   form.setCollectEmail(true);
-  form.setRequireLogin(false); // Bisa diubah true jika wajib akun belajar.id
+  form.setRequireLogin(false);
 
-  // 2. Tambahkan Data Identitas Siswa
-  form.addTextItem().setTitle("Nama Lengkap Siswa").setRequired(true);
-  form.addTextItem().setTitle("Nomor Induk Siswa / NISN").setRequired(true);
-  form.addTextItem().setTitle("Kelas / Rombel").setRequired(true);
-  form.addTextItem().setTitle("Token Akses Ujian (Misal: ZJT0P4M)").setRequired(true);
+  form.addTextItem().setTitle("Nama Lengkap").setRequired(true);
+  form.addTextItem().setTitle("Nomor Absen").setRequired(true);
+  form.addTextItem().setTitle("Kelas").setRequired(true);
 
-  // 3. Tambahkan Section Lembar Soal
-  form.addPageBreakItem().setTitle("Lembar Pengerjaan Soal Asesmen");
+  form.addPageBreakItem().setTitle("Soal Ujian");
 
   var qList = ${JSON.stringify(questions || [])};
+  var totalQ = qList.length;
+  var ptsEach = totalQ > 0 ? Math.floor(100 / totalQ) : 1;
+  var rem = totalQ > 0 ? 100 - (ptsEach * totalQ) : 0;
 
   for (var i = 0; i < qList.length; i++) {
-    var q = qList[i];
+    var q = qList[i] || {};
+    var pts = ptsEach + (i < rem ? 1 : 0);
     var fullPrompt = "";
-    if (q.stimulus && q.stimulus.trim() !== "") {
-      fullPrompt += q.stimulus + "\\n\\n";
+    if (q.stimulus && String(q.stimulus).trim() !== "") {
+      fullPrompt += String(q.stimulus).trim() + "\\n\\n";
     }
-    fullPrompt += q.question;
+    fullPrompt += cleanQuestionTitle(q.question) || ("Pertanyaan " + (i + 1));
 
     if (q.type === 'pilihan_ganda' && q.options && q.options.length > 0) {
       var mcItem = form.addMultipleChoiceItem();
-      mcItem.setTitle(fullPrompt).setPoints(q.points || 10).setRequired(true);
-
+      mcItem.setTitle(fullPrompt).setPoints(pts).setRequired(true);
+      var safeChoices = sanitizeChoices(q.options, q.correctAnswer);
       var choices = [];
-      var feedback = FormApp.createFeedback()
-        .setText("Pembahasan: " + (q.explanation || "Kunci jawaban: " + q.correctAnswer))
-        .build();
-
-      for (var j = 0; j < q.options.length; j++) {
-        var opt = q.options[j];
-        var isCorrect = (opt.key === q.correctAnswer || opt.text === q.correctAnswer);
-        choices.push(mcItem.createChoice(opt.key + ". " + opt.text, isCorrect));
+      for (var j = 0; j < safeChoices.length; j++) {
+        choices.push(mcItem.createChoice(safeChoices[j].text, safeChoices[j].isCorrect));
       }
       mcItem.setChoices(choices);
-      mcItem.setFeedbackForCorrect(feedback);
-      mcItem.setFeedbackForIncorrect(feedback);
     } else {
-      // Isian Singkat atau Uraian
       var textItem = form.addParagraphTextItem();
-      textItem.setTitle(fullPrompt).setPoints(q.points || 20).setRequired(true);
-      var textFeedback = FormApp.createFeedback()
-        .setText("Pedoman Jawaban & Pembahasan: " + (q.explanation || q.correctAnswer))
-        .build();
-      textItem.setGeneralFeedback(textFeedback);
+      textItem.setTitle(fullPrompt).setPoints(pts).setRequired(true);
     }
   }
 
-  Logger.log("✅ Berhasil membuat Google Form Kuis!");
-  Logger.log("🔗 Tautan Pengerjaan Siswa: " + form.getPublishedUrl());
-  Logger.log("✏️ Tautan Editor Guru: " + form.getEditUrl());
+  Logger.log("Berhasil membuat Google Form Kuis!");
+  Logger.log("Tautan Siswa: " + form.getPublishedUrl());
+  Logger.log("Tautan Editor Guru: " + form.getEditUrl());
 }
 `;
 
@@ -619,36 +638,95 @@ function buatKuisOtomatisSoalpintar() {
   }
 });
 
-// API 2b: Test Connection to Google Apps Script Web App (Code.gs v3.2)
+function appendGasToken(url: string, apiSecret?: string): string {
+  const cleanSecret = String(apiSecret || '').trim();
+  if (!cleanSecret) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(cleanSecret)}`;
+}
+
+function parseGasJsonSafe(text: string): { ok: boolean; data: any; errorMessage?: string } {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      data: null,
+      errorMessage: 'Web App Google Apps Script mengembalikan respons kosong.',
+    };
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return { ok: true, data: parsed };
+  } catch {
+    const looksLikeHtml = trimmed.startsWith('<') || /<html/i.test(trimmed);
+    return {
+      ok: false,
+      data: { raw: trimmed.slice(0, 500) },
+      errorMessage: looksLikeHtml
+        ? 'Web App Google Apps Script mengembalikan halaman HTML/login, bukan JSON. Pastikan URL berakhir "/exec", deployment diatur "Execute as: Me" & "Who has access: Anyone", lalu Deploy > Manage deployments > New version.'
+        : 'Respons dari Web App bukan JSON yang valid.',
+    };
+  }
+}
+
+// API 2b: Test Connection to Google Apps Script Web App (Code.gs v3.5.2)
 app.post('/api/gas/test-connection', async (req: Request, res: Response) => {
   try {
-    const { webAppUrl } = req.body;
-    if (!webAppUrl || !webAppUrl.startsWith('https://script.google.com/macros/s/')) {
+    const { webAppUrl, apiSecret } = req.body || {};
+    const cleanUrl = String(webAppUrl || '').trim();
+    const cleanSecret = String(apiSecret || '').trim();
+    if (!cleanUrl || !cleanUrl.startsWith('https://script.google.com/macros/s/')) {
       return res.status(400).json({
         success: false,
         message: 'URL Web App tidak valid. Format harus: https://script.google.com/macros/s/.../exec',
       });
     }
 
-    const testUrl = webAppUrl.includes('?') ? `${webAppUrl}&action=version` : `${webAppUrl}?action=version`;
-    const response = await fetch(testUrl, {
+    const versionUrl = cleanUrl.includes('?') ? `${cleanUrl}&action=version` : `${cleanUrl}?action=version`;
+    const response = await fetch(versionUrl, {
       method: 'GET',
       redirect: 'follow',
     });
 
     const text = await response.text();
-    let data: any = {};
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { raw: text };
+    const parsed = parseGasJsonSafe(text);
+    if (!response.ok || !parsed.ok) {
+      return res.status(400).json({
+        success: false,
+        message: parsed.errorMessage || `Web App mengembalikan status HTTP ${response.status}.`,
+        data: parsed.data,
+      });
+    }
+
+    const data = parsed.data || {};
+    if (data.status === 'error') {
+      return res.status(400).json({
+        success: false,
+        message: data.message || 'Web App mengembalikan error.',
+        data,
+      });
+    }
+
+    // If API_SECRET was provided, verify token validity via protected root doGet endpoint
+    if (cleanSecret) {
+      const authCheckUrl = appendGasToken(cleanUrl, cleanSecret);
+      const authRes = await fetch(authCheckUrl, { method: 'GET', redirect: 'follow' });
+      const authText = await authRes.text();
+      const authParsed = parseGasJsonSafe(authText);
+      if (authParsed.ok && authParsed.data?.status === 'error' && authParsed.data?.code === 'unauthorized') {
+        return res.status(401).json({
+          success: false,
+          message: 'Koneksi Web App aktif, tetapi API_SECRET tidak cocok dengan Script Properties di Apps Script.',
+          version: data.version || data.script_version || '3.5.2',
+        });
+      }
     }
 
     return res.json({
       success: true,
       message: 'Koneksi ke Web App Google Apps Script berhasil terhubung!',
       data,
-      version: data.version || '3.2',
+      version: data.version || data.script_version || '3.5.2',
     });
   } catch (err: any) {
     console.error('GAS connection test error:', err);
@@ -664,6 +742,7 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
   try {
     const {
       webAppUrl,
+      apiSecret,
       title,
       quiz_id,
       guru_name = 'Guru',
@@ -671,9 +750,11 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
       questions = [],
       shuffle_questions = false,
       shuffle_options = false,
-    } = req.body;
+    } = req.body || {};
 
-    if (!webAppUrl || !webAppUrl.startsWith('https://script.google.com/macros/s/')) {
+    const cleanUrl = String(webAppUrl || '').trim();
+    const cleanSecret = String(apiSecret || '').trim();
+    if (!cleanUrl || !cleanUrl.startsWith('https://script.google.com/macros/s/')) {
       return res.status(400).json({
         success: false,
         message: 'URL Web App belum dikonfigurasi. Silakan atur di menu Pengaturan Web App.',
@@ -683,11 +764,14 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
     const sanitizedQuestions = (Array.isArray(questions) ? questions : []).map((q: any) => ({
       ...q,
       number: q?.number !== undefined && q?.number !== null ? q.number : '',
-      question: String(q?.question || '').replace(/^\s*(?:undefined\.?\s*|\.\s+|(?:No\.?\s*)?\d+\s*[.)]\s*)+/i, '').trim(),
+      question: String(q?.question || '')
+        .replace(/^[\s\u00A0]*(?:undefined\s*\.?\s*|\.+\s+|(?:no\.?\s*)?\d{1,3}[\.\)\-:]\s+)+/i, '')
+        .trim(),
+      options: Array.isArray(q?.options) ? q.options : [],
     }));
 
-    const payload = {
-      title,
+    const payload: Record<string, any> = {
+      title: String(title || 'Quiz soalpintar.ai'),
       quiz_id,
       guru_name,
       folder_name: folder_name || guru_name,
@@ -695,8 +779,12 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
       shuffle_questions: Boolean(shuffle_questions),
       shuffle_options: Boolean(shuffle_options),
     };
+    if (cleanSecret) {
+      payload.token = cleanSecret;
+    }
 
-    const response = await fetch(webAppUrl, {
+    const targetUrl = appendGasToken(cleanUrl, cleanSecret);
+    const response = await fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -704,17 +792,28 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
     });
 
     const text = await response.text();
-    let data: any = {};
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { raw: text };
+    const parsed = parseGasJsonSafe(text);
+    if (!response.ok || !parsed.ok) {
+      return res.status(400).json({
+        success: false,
+        message: parsed.errorMessage || `Web App mengembalikan status HTTP ${response.status}.`,
+        data: parsed.data,
+      });
     }
 
+    const data = parsed.data || {};
     if (data.status === 'error') {
-      return res.status(400).json({ success: false, message: data.message });
+      return res.status(400).json({ success: false, message: data.message || 'Gagal membuat Google Form.' });
+    }
+    if (!data.form_url) {
+      return res.status(400).json({
+        success: false,
+        message: data.message || 'Web App tidak mengembalikan form_url. Pastikan kode Code.gs v3.5.2 sudah di-Deploy sebagai New version.',
+        data,
+      });
     }
 
+    const returnedVer = String(data.script_version || data.version || '');
     return res.json({
       success: true,
       data,
@@ -722,7 +821,7 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
       edit_url: data.edit_url,
       form_id: data.form_id,
       folder: data.folder,
-      needsScriptUpdate: data.script_version !== '3.3',
+      needsScriptUpdate: returnedVer !== '3.5.2',
     });
   } catch (err: any) {
     console.error('GAS create form error:', err);
@@ -733,29 +832,100 @@ app.post('/api/gas/create-form', async (req: Request, res: Response) => {
   }
 });
 
-// API 2d: Get Google Form responses & live student scores via Web App
+// API 2d: Get Google Form responses & live student scores via Web App (supports v3.5.2 find_form + batch pagination)
 app.post('/api/gas/get-responses', async (req: Request, res: Response) => {
   try {
-    const { webAppUrl, form_id, offset = 0, limit = 500 } = req.body;
-    if (!webAppUrl || !form_id) {
+    const {
+      webAppUrl,
+      apiSecret,
+      form_id,
+      since,
+      offset = 0,
+      limit = 1000,
+      summary_only = false,
+      nocache = false,
+    } = req.body || {};
+    const cleanUrl = String(webAppUrl || '').trim();
+    const cleanSecret = String(apiSecret || '').trim();
+    const rawFormId = String(form_id || '').trim();
+
+    if (!cleanUrl || !cleanUrl.startsWith('https://script.google.com/macros/s/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'URL Web App Google Apps Script belum valid.',
+      });
+    }
+
+    if (!rawFormId) {
       return res.status(400).json({ success: false, message: 'webAppUrl dan form_id wajib diisi' });
     }
 
-    const fetchUrl = `${webAppUrl}?action=responses&form_id=${encodeURIComponent(form_id)}&offset=${offset}&limit=${limit}`;
+    let resolvedFormId = rawFormId;
+
+    // Extract edit ID or published ID if a full Google Form URL was passed
+    const pubMatch = rawFormId.match(/\/forms\/d\/e\/([a-zA-Z0-9_-]+)/i);
+    const editMatch = rawFormId.match(/\/forms\/d\/(?!e\/)([a-zA-Z0-9_-]+)/i);
+    if (editMatch && editMatch[1]) {
+      resolvedFormId = editMatch[1];
+    } else if (pubMatch?.[1] || /^1FAIpQL/i.test(rawFormId) || rawFormId === 'e') {
+      const publishedId = pubMatch?.[1] || (/^1FAIpQL/i.test(rawFormId) ? rawFormId : '');
+      if (!publishedId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Format ID Form tidak valid. Masukkan tautan Editor (/forms/d/<ID>/edit) atau tautan lengkap /forms/d/e/1FAIpQL.../viewform.',
+        });
+      }
+
+      // Auto-resolve published_id -> edit form_id via Code.gs v3.5.2 find_form (uses PUB_MAP cache!)
+      const findBase = cleanUrl.includes('?') ? `${cleanUrl}&` : `${cleanUrl}?`;
+      const findUrl = appendGasToken(`${findBase}action=find_form&published_id=${encodeURIComponent(publishedId)}`, cleanSecret);
+      const findRes = await fetch(findUrl, { method: 'GET', redirect: 'follow' });
+      const findText = await findRes.text();
+      const findParsed = parseGasJsonSafe(findText);
+
+      if (!findRes.ok || !findParsed.ok || findParsed.data?.status !== 'success' || !findParsed.data?.form_id) {
+        return res.status(400).json({
+          success: false,
+          message:
+            findParsed.data?.message ||
+            'Form dari link publik (/d/e/1FAIpQL...) belum ditemukan di cache atau Google Drive akun Apps Script ini. Gunakan URL Editor (/forms/d/<ID_FORM>/edit) atau perbarui Web App ke Code.gs v3.5.2.',
+        });
+      }
+      resolvedFormId = String(findParsed.data.form_id);
+    }
+
+    const separator = cleanUrl.includes('?') ? '&' : '?';
+    let fetchUrl = `${cleanUrl}${separator}action=responses&form_id=${encodeURIComponent(resolvedFormId)}&offset=${Math.max(0, Number(offset) || 0)}&limit=${Math.min(2000, Math.max(1, Number(limit) || 1000))}`;
+    if (since) fetchUrl += `&since=${encodeURIComponent(String(since))}`;
+    if (summary_only) fetchUrl += `&summary_only=1`;
+    if (nocache) fetchUrl += `&nocache=1`;
+    fetchUrl = appendGasToken(fetchUrl, cleanSecret);
+
     const response = await fetch(fetchUrl, {
       method: 'GET',
       redirect: 'follow',
     });
 
     const text = await response.text();
-    let data: any = {};
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { raw: text };
+    const parsed = parseGasJsonSafe(text);
+    if (!response.ok || !parsed.ok) {
+      return res.status(400).json({
+        success: false,
+        message: parsed.errorMessage || `Web App mengembalikan status HTTP ${response.status}.`,
+        data: parsed.data,
+      });
     }
 
-    return res.json({ success: true, data });
+    const data = parsed.data || {};
+    if (data.status === 'error') {
+      return res.status(400).json({
+        success: false,
+        message: data.message || 'Google Form tidak ditemukan atau tidak dapat diakses.',
+        data,
+      });
+    }
+
+    return res.json({ success: true, data, resolved_form_id: resolvedFormId });
   } catch (err: any) {
     console.error('GAS get responses error:', err);
     return res.status(500).json({
@@ -765,12 +935,24 @@ app.post('/api/gas/get-responses', async (req: Request, res: Response) => {
   }
 });
 
+function isRoomExpired(room: LiveExamRoom): boolean {
+  if (!room.expiryDateTime) return false;
+  const ts = new Date(room.expiryDateTime).getTime();
+  return Number.isFinite(ts) && ts > 0 && Date.now() > ts;
+}
+
 // API 3: Get Room / Token Info
 app.get('/api/rooms/:token', (req: Request, res: Response) => {
   const token = req.params.token.toUpperCase();
   const room = rooms[token];
   if (!room) {
-    return res.status(404).json({ success: false, message: 'Token ujian tidak ditemukan atau telah kedaluwarsa.' });
+    return res.status(404).json({ success: false, notFound: true, message: 'Token ujian tidak ditemukan atau telah kedaluwarsa.' });
+  }
+  if (room.isActive === false) {
+    return res.status(403).json({ success: false, paused: true, message: 'Token ujian sedang dijeda sementara oleh pengawas.', room });
+  }
+  if (isRoomExpired(room)) {
+    return res.status(403).json({ success: false, expired: true, message: 'Masa berlaku token ujian telah berakhir.', room });
   }
   return res.json({ success: true, room });
 });
@@ -783,6 +965,23 @@ app.get('/api/rooms/:token/check-device', (req: Request, res: Response) => {
   const nisn = String(req.query.nisn || '').trim().toLowerCase();
   const googleFormUrl = String(req.query.googleFormUrl || '').trim();
   const localCompletedAt = Number(req.query.localCompletedAt || 0);
+
+  if (room?.isActive === false) {
+    return res.json({
+      success: true,
+      locked: false,
+      paused: true,
+      message: 'Token ujian sedang dijeda sementara oleh pengawas.',
+    });
+  }
+  if (room && isRoomExpired(room)) {
+    return res.json({
+      success: true,
+      locked: false,
+      expired: true,
+      message: 'Masa berlaku token ujian telah berakhir.',
+    });
+  }
 
   const lock = findMatchingDeviceLock(token, room, deviceId, nisn, googleFormUrl);
 
@@ -816,31 +1015,56 @@ app.post('/api/rooms', (req: Request, res: Response) => {
       maxViolations = 3,
       waitingRoomEnabled = false,
       isExamStarted,
+      isActive,
+      expiryDateTime,
       googleFormUrl,
       googleFormEditUrl,
       driveFolderUrl,
     } = req.body;
 
-    const normalizedToken = (token || Math.random().toString(36).substring(2, 9).toUpperCase()).toUpperCase();
+    const normalizedToken = String(token || Math.random().toString(36).substring(2, 9)).trim().toUpperCase();
+    if (!normalizedToken) {
+      return res.status(400).json({ success: false, message: 'Kode token tidak boleh kosong.' });
+    }
+    const existing = rooms[normalizedToken];
+    const safeTotalQ = Math.max(0, Number(totalQuestions) || 15);
+    const safeDuration = Math.max(0, Number.isFinite(Number(durationMinutes)) ? Number(durationMinutes) : 90);
+    const safeMaxViolations = Math.max(1, Number(maxViolations) || 3);
+
+    const remainingSeconds = existing
+      ? existing.durationMinutes === safeDuration
+        ? existing.remainingSeconds
+        : safeDuration * 60
+      : safeDuration * 60;
 
     rooms[normalizedToken] = {
       token: normalizedToken,
-      quizId: rooms[normalizedToken]?.quizId || 'quiz-' + Date.now(),
-      title: title || 'Asesmen Ujian Berbasis Komputer',
-      subject: subject || 'Umum',
-      grade: grade || 'Kelas VII',
-      totalQuestions: Number(totalQuestions) || 15,
-      durationMinutes: Number(durationMinutes),
-      remainingSeconds: Number(durationMinutes) * 60,
-      maxViolations: Number(maxViolations),
+      quizId: existing?.quizId || 'quiz-' + Date.now(),
+      title: String(title || existing?.title || 'Asesmen Ujian Berbasis Komputer'),
+      subject: String(subject || existing?.subject || 'Umum'),
+      grade: String(grade || existing?.grade || 'Kelas VII'),
+      totalQuestions: safeTotalQ,
+      durationMinutes: safeDuration,
+      remainingSeconds,
+      maxViolations: safeMaxViolations,
       waitingRoomEnabled: Boolean(waitingRoomEnabled),
       isExamStarted:
         isExamStarted !== undefined ? Boolean(isExamStarted) : !Boolean(waitingRoomEnabled),
-      googleFormUrl: googleFormUrl || '',
-      googleFormEditUrl: googleFormEditUrl || '',
-      driveFolderUrl: driveFolderUrl || 'https://drive.google.com/drive/folders/v2-soalpintar-ai',
-      createdAt: rooms[normalizedToken]?.createdAt || Date.now(),
-      participants: rooms[normalizedToken]?.participants || {},
+      isActive: isActive !== undefined ? Boolean(isActive) : (existing?.isActive ?? true),
+      expiryDateTime:
+        expiryDateTime !== undefined ? String(expiryDateTime || '') : (existing?.expiryDateTime || ''),
+      googleFormUrl:
+        googleFormUrl !== undefined ? String(googleFormUrl || '') : (existing?.googleFormUrl || ''),
+      googleFormEditUrl:
+        googleFormEditUrl !== undefined ? String(googleFormEditUrl || '') : (existing?.googleFormEditUrl || ''),
+      driveFolderUrl: String(
+        driveFolderUrl || existing?.driveFolderUrl || 'https://drive.google.com/drive/folders/v2-soalpintar-ai'
+      ),
+      createdAt: existing?.createdAt || Date.now(),
+      participants: existing?.participants || {},
+      completedLocks: existing?.completedLocks || [],
+      unlockedLocks: existing?.unlockedLocks || [],
+      lastBroadcastAlert: existing?.lastBroadcastAlert ?? null,
     };
 
     return res.json({ success: true, room: rooms[normalizedToken] });
@@ -855,6 +1079,12 @@ app.post('/api/rooms/:token/student-sync', (req: Request, res: Response) => {
   const room = rooms[token];
   if (!room) {
     return res.status(404).json({ success: false, message: 'Token tidak valid' });
+  }
+  if (room.isActive === false) {
+    return res.status(403).json({ success: false, paused: true, message: 'Token ujian sedang dijeda sementara oleh guru.' });
+  }
+  if (isRoomExpired(room)) {
+    return res.status(403).json({ success: false, expired: true, message: 'Masa berlaku token ujian telah berakhir.' });
   }
 
   const {
@@ -1078,11 +1308,78 @@ app.post('/api/rooms/:token/actions', (req: Request, res: Response) => {
     return res.json({ success: true, isExamStarted: true });
   }
 
+  if (action === 'set_active') {
+    room.isActive = Boolean(req.body.isActive);
+    return res.json({ success: true, isActive: room.isActive });
+  }
+
   return res.status(400).json({ success: false, message: 'Aksi tidak dikenal' });
 });
 
 // API 7: Get All Rooms for Teacher Dashboard
 app.get('/api/rooms', (_req: Request, res: Response) => {
+  return res.json({ success: true, rooms: Object.values(rooms) });
+});
+
+// API 7a: Synchronize persisted client tokens with server rooms (prevents restart desync or ghost rooms)
+app.post('/api/rooms/sync', (req: Request, res: Response) => {
+  const hasStoredTokens = Boolean(req.body?.hasStoredTokens);
+  const incoming = Array.isArray(req.body?.tokens) ? req.body.tokens : [];
+
+  if (hasStoredTokens) {
+    const keepSet = new Set<string>();
+    for (const item of incoming) {
+      if (!item || typeof item !== 'object' || !item.token) continue;
+      const tok = String(item.token).trim().toUpperCase();
+      if (!tok) continue;
+      keepSet.add(tok);
+
+      const existing = rooms[tok];
+      if (existing) {
+        existing.title = String(item.quizTitle || item.title || existing.title || 'Ujian CBT');
+        existing.subject = String(item.subject || existing.subject || 'Umum');
+        existing.grade = String(item.grade || existing.grade || 'SMP');
+        existing.totalQuestions = Math.max(0, Number(item.totalQuestions ?? existing.totalQuestions) || 10);
+        existing.maxViolations = Math.max(1, Number(item.maxViolations ?? existing.maxViolations) || 1);
+        existing.waitingRoomEnabled =
+          item.waitingRoomEnabled !== undefined ? Boolean(item.waitingRoomEnabled) : existing.waitingRoomEnabled;
+        existing.isExamStarted =
+          item.isExamStarted !== undefined ? Boolean(item.isExamStarted) : existing.isExamStarted;
+        if (item.googleFormUrl !== undefined) existing.googleFormUrl = String(item.googleFormUrl || '');
+        if (item.googleFormEditUrl !== undefined) existing.googleFormEditUrl = String(item.googleFormEditUrl || '');
+        if (item.driveFolderUrl !== undefined) existing.driveFolderUrl = String(item.driveFolderUrl || existing.driveFolderUrl);
+      } else {
+        const dur = Math.max(0, Number(item.durationMinutes) || 0);
+        rooms[tok] = {
+          token: tok,
+          quizId: String(item.quizId || 'quiz-' + tok),
+          title: String(item.quizTitle || item.title || 'Ujian CBT'),
+          subject: String(item.subject || 'Umum'),
+          grade: String(item.grade || 'SMP'),
+          totalQuestions: Math.max(0, Number(item.totalQuestions) || 10),
+          durationMinutes: dur,
+          remainingSeconds: dur * 60,
+          maxViolations: Math.max(1, Number(item.maxViolations) || 1),
+          waitingRoomEnabled: Boolean(item.waitingRoomEnabled),
+          isExamStarted: item.isExamStarted !== undefined ? Boolean(item.isExamStarted) : !Boolean(item.waitingRoomEnabled),
+          googleFormUrl: String(item.googleFormUrl || ''),
+          googleFormEditUrl: String(item.googleFormEditUrl || ''),
+          driveFolderUrl: String(item.driveFolderUrl || 'https://drive.google.com'),
+          createdAt: Number(item.createdAt) || Date.now(),
+          participants: {},
+          completedLocks: [],
+          unlockedLocks: [],
+        };
+      }
+    }
+
+    for (const existingKey of Object.keys(rooms)) {
+      if (!keepSet.has(existingKey)) {
+        delete rooms[existingKey];
+      }
+    }
+  }
+
   return res.json({ success: true, rooms: Object.values(rooms) });
 });
 

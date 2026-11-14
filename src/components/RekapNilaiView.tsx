@@ -16,18 +16,25 @@ import {
   Check,
   AlertCircle,
 } from 'lucide-react';
-import { StudentScoreRecord } from '../types';
+import { QuestionPackage, StudentScoreRecord } from '../types';
+import { ManualGoogleFormEntry } from './GoogleFormsView';
 
 interface RekapNilaiViewProps {
   scores: StudentScoreRecord[];
+  packages?: QuestionPackage[];
+  manualForms?: ManualGoogleFormEntry[];
   webAppUrl?: string;
+  gasApiSecret?: string;
   onOpenGasSettings?: () => void;
   onImportScores?: (newScores: StudentScoreRecord[]) => void;
 }
 
 export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
   scores,
+  packages = [],
+  manualForms = [],
   webAppUrl = '',
+  gasApiSecret = '',
   onOpenGasSettings,
   onImportScores,
 }) => {
@@ -58,22 +65,42 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
   const [newMaxScoreVal, setNewMaxScoreVal] = useState('100');
   const [newViolationsVal, setNewViolationsVal] = useState('0');
 
-  const totalStudents = scores.length;
-  const passedStudents = scores.filter((s) => s.percentage >= kkm).length;
+  const safeScores = scores.map((s, idx) => {
+    const sc = Number.isFinite(Number(s?.score)) ? Number(s.score) : 0;
+    const maxSc = Number.isFinite(Number(s?.maxScore)) && Number(s.maxScore) > 0 ? Number(s.maxScore) : 100;
+    const pct = Number.isFinite(Number(s?.percentage)) ? Number(s.percentage) : Math.round((sc / maxSc) * 100);
+    return {
+      ...s,
+      id: String(s?.id || `sc-${idx}`),
+      studentName: String(s?.studentName || `Siswa ${idx + 1}`),
+      nisn: String(s?.nisn || '-'),
+      kelas: String(s?.kelas || '-'),
+      token: String(s?.token || '-'),
+      score: sc,
+      maxScore: maxSc,
+      percentage: pct,
+      submittedAt: String(s?.submittedAt || '-'),
+      violations: Number.isFinite(Number(s?.violations)) ? Number(s.violations) : 0,
+    };
+  });
+
+  const totalStudents = safeScores.length;
+  const passedStudents = safeScores.filter((s) => s.percentage >= kkm).length;
   const passRate = totalStudents > 0 ? Math.round((passedStudents / totalStudents) * 100) : 0;
   const averageScore =
     totalStudents > 0
-      ? Math.round(scores.reduce((acc, s) => acc + s.score, 0) / totalStudents)
+      ? Math.round(safeScores.reduce((acc, s) => acc + s.score, 0) / totalStudents)
       : 0;
-  const highestScore = totalStudents > 0 ? Math.max(...scores.map((s) => s.score)) : 0;
-  const lowestScore = totalStudents > 0 ? Math.min(...scores.map((s) => s.score)) : 0;
+  const highestScore = totalStudents > 0 ? Math.max(...safeScores.map((s) => s.score)) : 0;
+  const lowestScore = totalStudents > 0 ? Math.min(...safeScores.map((s) => s.score)) : 0;
 
-  const filteredScores = scores.filter((s) => {
+  const filteredScores = safeScores.filter((s) => {
     const isPassed = s.percentage >= kkm;
+    const q = searchQuery.toLowerCase();
     const matchSearch =
-      s.studentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.nisn.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.kelas.toLowerCase().includes(searchQuery.toLowerCase());
+      s.studentName.toLowerCase().includes(q) ||
+      s.nisn.toLowerCase().includes(q) ||
+      s.kelas.toLowerCase().includes(q);
     const matchFilter =
       selectedFilter === 'all' ||
       (selectedFilter === 'tuntas' && isPassed) ||
@@ -85,9 +112,18 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
   const handleSaveEditedScore = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingScore) return;
-    const pct = editingScore.maxScore > 0 ? Math.round((editingScore.score / editingScore.maxScore) * 100) : 0;
+    const cleanScore = Math.max(0, Number.isFinite(Number(editingScore.score)) ? Number(editingScore.score) : 0);
+    const cleanMax = Math.max(1, Number.isFinite(Number(editingScore.maxScore)) ? Number(editingScore.maxScore) : 100);
+    const cleanViol = Math.max(0, Number.isFinite(Number(editingScore.violations)) ? Number(editingScore.violations) : 0);
+    const pct = Math.round((cleanScore / cleanMax) * 100);
     const updated: StudentScoreRecord = {
       ...editingScore,
+      studentName: String(editingScore.studentName || '').trim() || 'Siswa',
+      nisn: String(editingScore.nisn || '').trim() || '-',
+      kelas: String(editingScore.kelas || '').trim() || '-',
+      score: cleanScore,
+      maxScore: cleanMax,
+      violations: cleanViol,
       percentage: pct,
       statusKetuntasan: pct >= kkm ? 'Tuntas' : 'Belum Tuntas',
     };
@@ -112,21 +148,21 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
   const handleAddNewScore = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStudentName.trim()) return;
-    const sc = Number(newScoreVal) || 0;
-    const maxSc = Number(newMaxScoreVal) || 100;
-    const pct = maxSc > 0 ? Math.round((sc / maxSc) * 100) : 0;
+    const sc = Math.max(0, Number.isFinite(Number(newScoreVal)) ? Number(newScoreVal) : 0);
+    const maxSc = Math.max(1, Number.isFinite(Number(newMaxScoreVal)) && Number(newMaxScoreVal) > 0 ? Number(newMaxScoreVal) : 100);
+    const pct = Math.round((sc / maxSc) * 100);
     const newRecord: StudentScoreRecord = {
       id: 'sc-manual-' + Date.now(),
       studentName: newStudentName.trim(),
       nisn: newNisn.trim() || `0089${Math.floor(1000 + Math.random() * 9000)}`,
-      kelas: newKelas,
+      kelas: newKelas.trim() || 'VII-A',
       token: 'MANUAL',
       score: sc,
       maxScore: maxSc,
       percentage: pct,
       statusKetuntasan: pct >= kkm ? 'Tuntas' : 'Belum Tuntas',
       submittedAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-      violations: Number(newViolationsVal) || 0,
+      violations: Math.max(0, Number.isFinite(Number(newViolationsVal)) ? Number(newViolationsVal) : 0),
     };
     if (onImportScores) {
       onImportScores([newRecord, ...scores]);
@@ -137,28 +173,35 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
     setNewNisn('');
   };
 
+  const escapeCsvCell = (value: unknown) => {
+    const str = String(value ?? '');
+    return `"${str.replace(/"/g, '""')}"`;
+  };
+
   const exportCsv = () => {
     const headers = ['Nama Siswa', 'NISN', 'Kelas', 'Nilai', 'Skor Maksimal', 'Persentase', 'Status Ketuntasan (KKTP)', 'Waktu Selesai', 'Pelanggaran'];
     const rows = filteredScores.map((s) => [
-      `"${s.studentName}"`,
-      `"${s.nisn}"`,
-      `"${s.kelas}"`,
-      s.score,
-      s.maxScore,
-      `${s.percentage}%`,
-      s.percentage >= kkm ? 'TUNTAS' : 'BELUM TUNTAS',
-      `"${s.submittedAt}"`,
-      s.violations,
+      escapeCsvCell(s.studentName),
+      escapeCsvCell(s.nisn),
+      escapeCsvCell(s.kelas),
+      escapeCsvCell(s.score),
+      escapeCsvCell(s.maxScore),
+      escapeCsvCell(`${s.percentage}%`),
+      escapeCsvCell(s.percentage >= kkm ? 'TUNTAS' : 'BELUM TUNTAS'),
+      escapeCsvCell(s.submittedAt),
+      escapeCsvCell(s.violations),
     ]);
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvText = '\uFEFF' + [headers.map(escapeCsvCell).join(','), ...rows.map((e) => e.join(','))].join('\r\n');
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.setAttribute('href', url);
     link.setAttribute('download', `Rekap_Nilai_Soalpintar_${Date.now()}.csv`);
     document.body.appendChild(link);
     link.click();
     link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleOpenSync = () => {
@@ -173,68 +216,148 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
     setShowSyncModal(true);
   };
 
+  const linkedFormPackages = packages.filter(
+    (p) =>
+      (p.formId && !p.formId.startsWith('manual-')) ||
+      (p.googleFormEditUrl && p.googleFormEditUrl.includes('/forms/d/')) ||
+      (p.googleFormUrl && p.googleFormUrl.includes('/forms/d/'))
+  );
+
   const handleSyncResponses = async () => {
-    if (!formIdInput.trim()) {
-      showToast('Harap masukkan ID Form Google.');
+    const rawInput = formIdInput.trim();
+    if (!rawInput) {
+      showToast('Harap masukkan ID Form Google, URL Editor (/edit), atau URL Siswa (/viewform).');
       return;
     }
+
+    let formTarget = rawInput;
+    if (rawInput.includes('/d/e/')) {
+      const pubMatch = rawInput.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
+      if (pubMatch?.[1]) {
+        formTarget = rawInput; // Send full /d/e/ link so server resolves via Code.gs v3.5.2 find_form
+      }
+    } else if (rawInput.includes('/d/')) {
+      const editMatch = rawInput.match(/\/d\/(?!e\/)([a-zA-Z0-9_-]+)/);
+      if (editMatch?.[1]) {
+        formTarget = editMatch[1];
+      }
+    }
+
+    if (!formTarget || formTarget === 'e') {
+      setSyncFeedback('Format ID Form Google tidak valid. Pastikan menggunakan ID Editor atau tautan lengkap Google Form.');
+      return;
+    }
+
     setIsSyncing(true);
     setSyncFeedback(null);
 
-    let cleanId = formIdInput.trim();
-    if (cleanId.includes('/d/')) {
-      const match = cleanId.match(/\/d\/([a-zA-Z0-9_-]+)/);
-      if (match && match[1]) cleanId = match[1];
-    }
-
     try {
-      const res = await fetch('/api/gas/get-responses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          webAppUrl,
-          form_id: cleanId,
-        }),
-      });
+      let offset = 0;
+      let hasMore = true;
+      let pageGuard = 0;
+      let allRows: Record<string, any>[] = [];
+      let maxScore = 100;
+      let resolvedId = formTarget;
+      let engineName = '';
 
-      const data = await res.json();
-      if (data.success && data.data && data.data.status === 'success') {
+      while (hasMore && pageGuard < 10) {
+        pageGuard++;
+        const res = await fetch('/api/gas/get-responses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            webAppUrl,
+            apiSecret: gasApiSecret || undefined,
+            form_id: resolvedId,
+            offset,
+            limit: 1000,
+            summary_only: true,
+          }),
+        });
+
+        const text = await res.text();
+        let data: any = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = null;
+        }
+
+        if (!res.ok || !data) {
+          setSyncFeedback(data?.message || `Gagal terhubung ke server/Web App (HTTP ${res.status}).`);
+          return;
+        }
+
+        if (!data.success || !data.data || data.data.status !== 'success') {
+          setSyncFeedback('Gagal mengambil respon: ' + (data.data?.message || data.message || 'Pastikan Form ID benar & Web App v3.5.2 aktif.'));
+          return;
+        }
+
         const gasResult = data.data;
-        const rows = gasResult.responses || [];
-        const maxScore = gasResult.max_score || 100;
+        if (data.resolved_form_id) {
+          resolvedId = String(data.resolved_form_id);
+        }
+        if (gasResult.is_quiz === false) {
+          setSyncFeedback('Google Form ini belum diatur sebagai Mode Kuis sehingga belum memiliki skor.');
+          return;
+        }
+        if (Number(gasResult.max_score) > 0) {
+          maxScore = Number(gasResult.max_score);
+        }
+        if (gasResult.engine) {
+          engineName = String(gasResult.engine);
+        }
 
-        if (rows.length === 0) {
-          setSyncFeedback('Form ditemukan, namun belum ada respon siswa yang masuk.');
-        } else {
-          const imported: StudentScoreRecord[] = rows.map((r: any, idx: number) => {
-            const rawScore = Number(r.score || 0);
-            const pct = maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0;
+        const batchRows = Array.isArray(gasResult.responses) ? gasResult.responses : [];
+        allRows = allRows.concat(batchRows);
+        hasMore = Boolean(gasResult.has_more && gasResult.next_offset !== null && gasResult.next_offset !== undefined);
+        offset = hasMore ? Number(gasResult.next_offset) : 0;
+      }
+
+      if (allRows.length === 0) {
+        setSyncFeedback('Form ditemukan, namun belum ada respon siswa yang masuk.');
+      } else {
+        const imported: StudentScoreRecord[] = allRows
+          .filter((r: unknown): r is Record<string, any> => Boolean(r && typeof r === 'object'))
+          .map((r: any, idx: number) => {
+            const rawScore = r.score !== null && r.score !== undefined && Number.isFinite(Number(r.score)) ? Number(r.score) : 0;
+            const pct = maxScore > 0 ? Math.min(100, Math.round((rawScore / maxScore) * 100)) : 0;
+            let formattedTime = 'Baru saja';
+            if (r.submitted_at) {
+              const dt = new Date(r.submitted_at);
+              if (!isNaN(dt.getTime())) {
+                formattedTime = dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+              }
+            }
             return {
-              id: r.id || `gas-resp-${idx}`,
-              studentName: r.name || (r.email ? r.email.split('@')[0] : `Siswa ${idx + 1}`),
+              id: String(r.id ? `gas-${resolvedId}-${r.id}` : `gas-${resolvedId}-${idx}`),
+              studentName: String(r.name || (r.email ? String(r.email).split('@')[0] : `Siswa ${idx + 1}`)),
               nisn: r.absen ? `Absen ${r.absen}` : `0089${1000 + idx}`,
-              kelas: r.kelas || 'VII-A',
+              kelas: String(r.kelas || '-'),
               token: 'GFORM-LIVE',
               score: rawScore,
               maxScore: maxScore,
               percentage: pct,
               statusKetuntasan: pct >= kkm ? 'Tuntas' : 'Belum Tuntas',
-              submittedAt: r.submitted_at ? new Date(r.submitted_at).toLocaleTimeString('id-ID') : 'Baru saja',
+              submittedAt: formattedTime,
               violations: 0,
             };
           });
 
-          if (onImportScores) {
-            onImportScores(imported);
+        if (onImportScores) {
+          const byId = new Map(scores.map((s) => [s.id, s]));
+          for (const rec of imported) {
+            byId.set(rec.id, rec);
           }
-          setSyncFeedback(`Berhasil mengimpor ${imported.length} data nilai respon dari Google Forms!`);
-          setTimeout(() => setShowSyncModal(false), 2000);
+          onImportScores(Array.from(byId.values()));
         }
-      } else {
-        setSyncFeedback('Gagal mengambil respon: ' + (data.data?.message || data.message || 'Error'));
+        setSyncFeedback(
+          `Berhasil mengimpor ${imported.length} data nilai respon dari Google Forms${engineName ? ` (${engineName})` : ''}!`
+        );
+        setTimeout(() => setShowSyncModal(false), 1800);
       }
     } catch (err: any) {
-      setSyncFeedback('Terjadi kesalahan: ' + err.message);
+      setSyncFeedback('Terjadi kesalahan: ' + (err?.message || 'Koneksi gagal'));
     } finally {
       setIsSyncing(false);
     }
@@ -285,7 +408,7 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                Tarik Nilai dari Google Forms via Web App v3.2
+                Tarik Nilai dari Google Forms via Web App v3.5.2
               </h3>
               <button
                 onClick={() => setShowSyncModal(false)}
@@ -296,18 +419,48 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
             </div>
 
             <p className="text-xs text-slate-500">
-              Sistem akan memanggil fungsi <code className="font-mono text-emerald-600">getFormResponses()</code> di script Code.gs untuk mengambil nama, absen, kelas, dan skor siswa per butir soal secara real-time.
+              Sistem akan memanggil <code className="font-mono text-emerald-600">getFormResponses()</code> di Code.gs v3.5.2 (otomatis fallback FormApp tanpa error 403, micro-cache 60 detik, dan pelacakan <code className="font-mono text-emerald-600">find_form</code>).
             </p>
+
+            {(linkedFormPackages.length > 0 || manualForms.length > 0) && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Pilih Cepat dari Bank Soal / Form Manual:
+                </label>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) setFormIdInput(e.target.value);
+                  }}
+                  className="w-full text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 text-slate-900 dark:text-slate-100"
+                >
+                  <option value="">-- Pilih Google Form --</option>
+                  {linkedFormPackages.map((p) => {
+                    const targetVal = p.googleFormEditUrl || p.formId || p.googleFormUrl || '';
+                    return (
+                      <option key={p.id} value={targetVal}>
+                        {p.title} ({p.subject})
+                      </option>
+                    );
+                  })}
+                  {manualForms.map((m) => (
+                    <option key={m.id} value={m.url}>
+                      [Manual] {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                ID Google Form atau Tautan Editor:
+                ID Google Form, Tautan Editor (/edit), atau Tautan Siswa (/viewform):
               </label>
               <input
                 type="text"
                 value={formIdInput}
                 onChange={(e) => setFormIdInput(e.target.value)}
-                placeholder="Contoh ID: 1FAIpQLSc... atau tempel URL edit form"
+                placeholder="https://docs.google.com/forms/d/<ID_FORM>/edit"
                 className="w-full text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 text-slate-900 dark:text-slate-100"
               />
             </div>
@@ -405,10 +558,13 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
             <span className="text-slate-500 whitespace-nowrap">Batas KKTP / KKM:</span>
             <input
               type="number"
-              min={50}
-              max={95}
+              min={0}
+              max={100}
               value={kkm}
-              onChange={(e) => setKkm(Number(e.target.value))}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                setKkm(Number.isFinite(val) ? Math.max(0, Math.min(100, val)) : 75);
+              }}
               className="w-16 text-xs font-mono font-bold text-center bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md py-1 text-slate-900 dark:text-slate-100"
             />
           </div>
@@ -595,10 +751,9 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
                   <input
                     type="number"
                     min={0}
-                    max={100}
                     required
                     value={editingScore.score}
-                    onChange={(e) => setEditingScore({ ...editingScore, score: Number(e.target.value) || 0 })}
+                    onChange={(e) => setEditingScore({ ...editingScore, score: Math.max(0, Number(e.target.value) || 0) })}
                     className="w-full text-xs bg-slate-900 border border-emerald-600/80 rounded-lg p-2.5 text-emerald-300 font-bold font-mono text-center"
                   />
                 </div>
@@ -607,10 +762,9 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
                   <input
                     type="number"
                     min={1}
-                    max={100}
                     required
                     value={editingScore.maxScore}
-                    onChange={(e) => setEditingScore({ ...editingScore, maxScore: Number(e.target.value) || 100 })}
+                    onChange={(e) => setEditingScore({ ...editingScore, maxScore: Math.max(1, Number(e.target.value) || 100) })}
                     className="w-full text-xs bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white font-mono text-center"
                   />
                 </div>
@@ -708,7 +862,6 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
                   <input
                     type="number"
                     min={0}
-                    max={100}
                     required
                     value={newScoreVal}
                     onChange={(e) => setNewScoreVal(e.target.value)}
@@ -720,7 +873,6 @@ export const RekapNilaiView: React.FC<RekapNilaiViewProps> = ({
                   <input
                     type="number"
                     min={1}
-                    max={100}
                     required
                     value={newMaxScoreVal}
                     onChange={(e) => setNewMaxScoreVal(e.target.value)}

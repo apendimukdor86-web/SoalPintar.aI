@@ -153,8 +153,14 @@ export const LoginView: React.FC<LoginViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: trimmedEmail, password: teacherPassword }),
       });
-      const data = await res.json();
-      if (res.ok && data.success && data.teacher) {
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = text && !text.trim().startsWith('<') ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
+      if (res.ok && data?.success && data.teacher) {
         onLoginSuccess({
           role: 'teacher',
           name: data.teacher.name,
@@ -165,8 +171,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
       }
 
       setErrorMsg(
-        data.message ||
-          'Email guru belum terdaftar. Klik "Daftar Guru Baru" untuk membuat akun dan menyimpannya ke Pengaturan.'
+        data?.message ||
+          'Email guru belum terdaftar. Klik "Daftar Pengguna Guru" untuk membuat akun dan menyimpannya ke Pengaturan.'
       );
     } catch {
       // Fallback for default demo account if server unreachable
@@ -273,9 +279,15 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
     setIsLoading(true);
     try {
-      // Verify token against server rooms (allow activeExamToken fallback)
+      // Verify token against server rooms (allow non-empty activeExamToken fallback)
       const res = await fetch(`/api/rooms/${encodeURIComponent(normalizedToken)}`);
-      if (!res.ok && normalizedToken !== activeExamToken.toUpperCase()) {
+      const ct = res.headers.get('content-type') || '';
+      const validFallback = Boolean(
+        activeExamToken &&
+          activeExamToken.trim() &&
+          normalizedToken === activeExamToken.trim().toUpperCase()
+      );
+      if ((!res.ok || !ct.includes('application/json')) && !validFallback) {
         setErrorMsg(
           `Kode token "${normalizedToken}" tidak ditemukan. Periksa kembali token dari pengawas/guru.`
         );

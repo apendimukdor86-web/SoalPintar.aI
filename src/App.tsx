@@ -43,17 +43,130 @@ const DEFAULT_TEACHER_ACCOUNTS: TeacherAccount[] = [
   },
 ];
 
+function sanitizePackages(raw: unknown): QuestionPackage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object' && item.id))
+    .map((p) => ({
+      ...p,
+      id: String(p.id),
+      title: String(p.title || 'Paket Soal Tanpa Judul'),
+      subject: String(p.subject || 'Umum'),
+      grade: String(p.grade || 'SMP'),
+      topic: String(p.topic || ''),
+      createdAt: String(p.createdAt || ''),
+      questions: Array.isArray(p.questions)
+        ? p.questions
+            .filter((q: unknown): q is Record<string, any> => Boolean(q && typeof q === 'object'))
+            .map((q: any, idx: number) => ({
+              ...q,
+              id: String(q.id || `q-${idx + 1}`),
+              number: Number(q.number) || idx + 1,
+              type: q.type === 'isian' || q.type === 'uraian' ? q.type : 'pilihan_ganda',
+              question: String(q.question || ''),
+              options: Array.isArray(q.options)
+                ? q.options
+                    .filter((o: unknown): o is Record<string, any> => Boolean(o && typeof o === 'object'))
+                    .map((o: any, oIdx: number) => ({
+                      key: String(o.key || String.fromCharCode(65 + oIdx)),
+                      text: String(o.text || ''),
+                    }))
+                : [],
+              correctAnswer: String(q.correctAnswer || 'A'),
+              explanation: String(q.explanation || ''),
+              cognitiveLevel: String(q.cognitiveLevel || 'C2'),
+              points: Number(q.points) > 0 ? Number(q.points) : 10,
+            }))
+        : [],
+    }));
+}
+
+function sanitizeManualForms(raw: unknown): ManualGoogleFormEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object' && item.url))
+    .map((m, idx) => ({
+      id: String(m.id || `gform-${idx}`),
+      label: String(m.label || 'Google Form Kuis'),
+      url: String(m.url || ''),
+      createdAt: String(m.createdAt || ''),
+      timeAgo: String(m.timeAgo || 'Baru saja'),
+    }));
+}
+
+function sanitizeScores(raw: unknown): StudentScoreRecord[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object'))
+    .map((s, idx) => {
+      const score = Number.isFinite(Number(s.score)) ? Number(s.score) : 0;
+      const maxScore = Number.isFinite(Number(s.maxScore)) && Number(s.maxScore) > 0 ? Number(s.maxScore) : 100;
+      const pct = Number.isFinite(Number(s.percentage))
+        ? Number(s.percentage)
+        : Math.round((score / maxScore) * 100);
+      return {
+        id: String(s.id || `score-${idx}`),
+        studentName: String(s.studentName || `Siswa ${idx + 1}`),
+        nisn: String(s.nisn || '-'),
+        kelas: String(s.kelas || '-'),
+        token: String(s.token || '-'),
+        score,
+        maxScore,
+        percentage: pct,
+        statusKetuntasan: s.statusKetuntasan === 'Tuntas' ? 'Tuntas' : 'Belum Tuntas',
+        submittedAt: String(s.submittedAt || '-'),
+        violations: Number.isFinite(Number(s.violations)) ? Number(s.violations) : 0,
+      };
+    });
+}
+
+function sanitizeViolations(raw: unknown): StudentViolationLog[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object'))
+    .map((v, idx) => ({
+      id: String(v.id || `viol-${idx}`),
+      studentId: String(v.studentId || v.nisn || `std-${idx}`),
+      studentName: String(v.studentName || 'Siswa'),
+      nisn: String(v.nisn || '-'),
+      kelas: String(v.kelas || '-'),
+      token: String(v.token || '-'),
+      timestamp: Number.isFinite(Number(v.timestamp)) ? Number(v.timestamp) : Date.now(),
+      type: (v.type || 'Pindah Tab') as StudentViolationLog['type'],
+      penaltySeconds: Number.isFinite(Number(v.penaltySeconds)) ? Number(v.penaltySeconds) : 10,
+    }));
+}
+
+function sanitizeTeachers(raw: unknown): TeacherAccount[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object' && item.email && item.name))
+    .map((t, idx) => ({
+      id: String(t.id || `teacher-${idx}`),
+      name: String(t.name),
+      email: String(t.email).toLowerCase(),
+      password: String(t.password || 'guru123'),
+      subject: t.subject ? String(t.subject) : '',
+      school: t.school ? String(t.school) : '',
+      role: t.role === 'Admin Sekolah' || t.role === 'Pengawas' ? t.role : 'Guru Mapel',
+      status: t.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+      createdAt: String(t.createdAt || new Date().toISOString()),
+      source: t.source === 'portal_daftar' ? 'portal_daftar' : 'pengaturan',
+    }));
+}
+
 export default function App() {
   const urlParams = new URLSearchParams(window.location.search);
   const initialTokenParam = (() => {
     const fromUrl = urlParams.get('token');
-    if (fromUrl) return fromUrl;
+    if (fromUrl) return fromUrl.trim().toUpperCase();
     try {
       const savedTokens = localStorage.getItem('soalpintar_created_tokens_v2');
       if (savedTokens !== null) {
         const parsed = JSON.parse(savedTokens);
         if (Array.isArray(parsed)) {
-          return parsed[0]?.token || '';
+          const valid = parsed.find((t) => t && typeof t === 'object' && typeof t.token === 'string' && t.token.trim());
+          return valid ? String(valid.token).trim().toUpperCase() : '';
         }
       }
     } catch {
@@ -70,7 +183,10 @@ export default function App() {
       const saved = localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && (parsed.role === 'teacher' || parsed.role === 'student')) {
+        if (parsed && parsed.role === 'teacher' && parsed.email && parsed.name) {
+          return parsed as AuthSession;
+        }
+        if (parsed && parsed.role === 'student' && parsed.token && parsed.name) {
           return parsed as AuthSession;
         }
       }
@@ -82,15 +198,7 @@ export default function App() {
 
   const [mode, setMode] = useState<'teacher' | 'student'>(() => {
     if (urlParams.get('mode') === 'student') return 'student';
-    try {
-      const saved = localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed?.role === 'student') return 'student';
-      }
-    } catch {
-      // Ignore storage error
-    }
+    if (authSession?.role === 'student') return 'student';
     return 'teacher';
   });
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -101,6 +209,9 @@ export default function App() {
   // Google Apps Script Web App Setting State (Persisted)
   const [webAppUrl, setWebAppUrl] = useState<string>(() => {
     return localStorage.getItem('soalpintar_gas_webapp_url') || '';
+  });
+  const [gasApiSecret, setGasApiSecret] = useState<string>(() => {
+    return localStorage.getItem('soalpintar_gas_api_secret') || '';
   });
   const [guruName, setGuruName] = useState<string>(() => {
     return localStorage.getItem('soalpintar_gas_guru_name') || 'Apendi Mukdor, S.Pd.';
@@ -115,6 +226,15 @@ export default function App() {
   const handleSaveWebAppUrl = (url: string) => {
     setWebAppUrl(url);
     localStorage.setItem('soalpintar_gas_webapp_url', url);
+  };
+
+  const handleSaveGasApiSecret = (secret: string) => {
+    setGasApiSecret(secret);
+    if (secret) {
+      localStorage.setItem('soalpintar_gas_api_secret', secret);
+    } else {
+      localStorage.removeItem('soalpintar_gas_api_secret');
+    }
   };
 
   const handleSaveGuruName = (name: string) => {
@@ -138,7 +258,7 @@ export default function App() {
       const saved = localStorage.getItem(PACKAGES_STORAGE_KEY);
       if (saved !== null) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) return sanitizePackages(parsed);
       }
     } catch {
       // Ignore storage error
@@ -150,7 +270,7 @@ export default function App() {
       const saved = localStorage.getItem(MANUAL_FORMS_STORAGE_KEY);
       if (saved !== null) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) return sanitizeManualForms(parsed);
       }
     } catch {
       // Ignore storage error
@@ -162,7 +282,7 @@ export default function App() {
       const saved = localStorage.getItem(SCORES_STORAGE_KEY);
       if (saved !== null) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) return sanitizeScores(parsed);
       }
     } catch {
       // Ignore storage error
@@ -174,7 +294,7 @@ export default function App() {
       const saved = localStorage.getItem(VIOLATIONS_STORAGE_KEY);
       if (saved !== null) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) return sanitizeViolations(parsed);
       }
     } catch {
       // Ignore storage error
@@ -210,10 +330,8 @@ export default function App() {
     try {
       const saved = localStorage.getItem(REGISTERED_TEACHERS_STORAGE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed as TeacherAccount[];
-        }
+        const cleaned = sanitizeTeachers(JSON.parse(saved));
+        if (cleaned.length > 0) return cleaned;
       }
     } catch {
       // Ignore storage error
@@ -229,20 +347,20 @@ export default function App() {
     }
   }, [registeredTeachers]);
 
-  // Sync local registered teachers with backend store on startup
+  // Sync local registered teachers and persisted tokens with backend store on startup
   useEffect(() => {
     fetch('/api/teachers/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ teachers: registeredTeachers }),
     })
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.success && Array.isArray(data.teachers) && data.teachers.length > 0) {
           setRegisteredTeachers((prev) => {
             const byEmail = new Map<string, TeacherAccount>();
             for (const t of prev) byEmail.set(t.email.toLowerCase(), t);
-            for (const t of data.teachers as TeacherAccount[]) {
+            for (const t of sanitizeTeachers(data.teachers)) {
               if (!byEmail.has(t.email.toLowerCase())) {
                 byEmail.set(t.email.toLowerCase(), t);
               }
@@ -254,6 +372,25 @@ export default function App() {
       .catch(() => {
         // Ignore offline error
       });
+
+    try {
+      const rawTokens = localStorage.getItem('soalpintar_created_tokens_v2');
+      if (rawTokens !== null) {
+        const parsedTokens = JSON.parse(rawTokens);
+        if (Array.isArray(parsedTokens)) {
+          const validTokens = parsedTokens.filter(
+            (t) => t && typeof t === 'object' && typeof t.token === 'string' && t.token.trim()
+          );
+          fetch('/api/rooms/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hasStoredTokens: true, tokens: validTokens }),
+          }).catch(() => {});
+        }
+      }
+    } catch {
+      // Ignore storage/network error
+    }
   }, []);
 
   const handleCreateTeacher = async (
@@ -283,9 +420,15 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
       if (!res.ok && res.status !== 404) {
-        return { success: false, message: data.message || 'Gagal mendaftarkan guru.' };
+        return { success: false, message: data?.message || 'Gagal mendaftarkan guru.' };
       }
       if (data?.success && data.teacher) {
         createdTeacher = data.teacher;
@@ -316,8 +459,14 @@ export default function App() {
         body: JSON.stringify(updates),
       });
       if (!res.ok && res.status !== 404) {
-        const data = await res.json();
-        return { success: false, message: data.message || 'Gagal memperbarui akun guru.' };
+        const text = await res.text();
+        let data: any = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = null;
+        }
+        return { success: false, message: data?.message || 'Gagal memperbarui akun guru.' };
       }
     } catch {
       // Ignore offline error
@@ -362,23 +511,82 @@ export default function App() {
     setManualForms((prev) => prev.filter((m) => m.id !== id));
   };
 
-  // Active Exam Token & Room Configuration
-  const [examConfig, setExamConfig] = useState<ExamTokenConfig>({
-    token: initialTokenParam.toUpperCase(),
-    title: 'Asesmen Sumatif Akhir: Matematika Aljabar & Bilangan Bulat',
-    subject: 'Matematika',
-    grade: 'Kelas VII SMP',
-    totalQuestions: 15,
-    durationMinutes: 90,
-    remainingSeconds: 82 * 60,
-    maxViolations: 3,
-    waitingRoomEnabled: false,
-    isExamStarted: true,
-    googleFormUrl: '',
-    googleFormEditUrl: '',
-    driveFolderUrl: 'https://drive.google.com',
-    expiryMode: 'jp',
-    jpCount: 2,
+  // Active Exam Token & Room Configuration (synced from saved tokens if present)
+  const [examConfig, setExamConfig] = useState<ExamTokenConfig>(() => {
+    const cleanToken = initialTokenParam.toUpperCase();
+    try {
+      const savedTokensRaw = localStorage.getItem('soalpintar_created_tokens_v2');
+      if (savedTokensRaw !== null) {
+        const parsedTokens = JSON.parse(savedTokensRaw);
+        if (Array.isArray(parsedTokens)) {
+          if (parsedTokens.length === 0 && !urlParams.get('token')) {
+            return {
+              token: '',
+              title: '',
+              subject: '',
+              grade: '',
+              totalQuestions: 0,
+              durationMinutes: 90,
+              remainingSeconds: 90 * 60,
+              maxViolations: 3,
+              waitingRoomEnabled: false,
+              isExamStarted: true,
+              isActive: true,
+              googleFormUrl: '',
+              googleFormEditUrl: '',
+              driveFolderUrl: 'https://drive.google.com',
+              expiryMode: 'jp',
+              jpCount: 2,
+            };
+          }
+          const matched =
+            parsedTokens.find((t: any) => t?.token?.toUpperCase() === cleanToken) || parsedTokens[0];
+          if (matched) {
+            return {
+              token: matched.token || cleanToken,
+              title: matched.quizTitle || 'Ujian CBT',
+              subject: matched.subject || 'Umum',
+              grade: matched.grade || 'SMP',
+              totalQuestions: Number(matched.totalQuestions) || 10,
+              durationMinutes: 90,
+              remainingSeconds: 90 * 60,
+              maxViolations: Number(matched.maxViolations) || 3,
+              waitingRoomEnabled: Boolean(matched.waitingRoomEnabled),
+              isExamStarted: matched.isExamStarted !== false,
+              isActive: matched.isActive !== false,
+              googleFormUrl: matched.googleFormUrl || '',
+              googleFormEditUrl: matched.googleFormEditUrl || '',
+              driveFolderUrl: matched.driveFolderUrl || 'https://drive.google.com',
+              expiryMode: matched.expiryDateTime ? 'datetime' : 'jp',
+              expiryDateTime: matched.expiryDateTime || undefined,
+              jpCount: 2,
+            };
+          }
+        }
+      }
+    } catch {
+      // Ignore storage error
+    }
+
+    const firstPkg = packages[0];
+    return {
+      token: cleanToken,
+      title: firstPkg?.title || 'Asesmen Sumatif Akhir: Matematika Aljabar & Bilangan Bulat',
+      subject: firstPkg?.subject || 'Matematika',
+      grade: firstPkg?.grade || 'Kelas VII SMP',
+      totalQuestions: firstPkg?.questions?.length || 15,
+      durationMinutes: 90,
+      remainingSeconds: 82 * 60,
+      maxViolations: 3,
+      waitingRoomEnabled: false,
+      isExamStarted: true,
+      isActive: true,
+      googleFormUrl: firstPkg?.googleFormUrl || '',
+      googleFormEditUrl: firstPkg?.googleFormEditUrl || '',
+      driveFolderUrl: firstPkg?.driveFolderUrl || 'https://drive.google.com',
+      expiryMode: 'jp',
+      jpCount: 2,
+    };
   });
 
   // Sync dark mode class
@@ -499,6 +707,8 @@ export default function App() {
         guruName={guruName}
         fallbackExamConfig={examConfig}
         onLogout={handleLogout}
+        onRecordScore={(rec) => setScores((prev) => [rec, ...prev])}
+        onRecordViolation={(log) => setViolations((prev) => [log, ...prev])}
         onExitToTeacherDashboard={() => {
           if (isTeacherPreview) {
             setMode('teacher');
@@ -554,6 +764,7 @@ export default function App() {
             <DashboardView
               teacherName={guruName || 'Apendi Mukdor, S.Pd.'}
               packages={packages}
+              manualForms={manualForms}
               violations={violations}
               examConfig={examConfig}
               onNavigate={(tab) => setActiveTab(tab)}
@@ -566,6 +777,10 @@ export default function App() {
               onSaveToBank={handleAddPackage}
               onOpenDistribusi={handleDistributePackage}
               webAppUrl={webAppUrl}
+              gasApiSecret={gasApiSecret}
+              guruName={guruName}
+              shuffleQuestions={shuffleQuestions}
+              shuffleOptions={shuffleOptions}
               onOpenGasSettings={() => setActiveTab('settings_gas')}
             />
           )}
@@ -579,10 +794,12 @@ export default function App() {
               onDistributePackage={handleDistributePackage}
               onGoToAiGenerator={() => setActiveTab('generator')}
               webAppUrl={webAppUrl}
+              gasApiSecret={gasApiSecret}
               guruName={guruName}
               shuffleQuestions={shuffleQuestions}
               shuffleOptions={shuffleOptions}
               onOpenGasSettings={() => setActiveTab('settings_gas')}
+              onUpdateWebAppUrl={handleSaveWebAppUrl}
             />
           )}
 
@@ -635,7 +852,10 @@ export default function App() {
           {activeTab === 'rekap' && (
             <RekapNilaiView
               scores={scores}
+              packages={packages}
+              manualForms={manualForms}
               webAppUrl={webAppUrl}
+              gasApiSecret={gasApiSecret}
               onOpenGasSettings={() => setActiveTab('settings_gas')}
               onImportScores={(newScores) => setScores(newScores)}
             />
@@ -657,6 +877,8 @@ export default function App() {
             <GasSettingsView
               webAppUrl={webAppUrl}
               onSaveWebAppUrl={handleSaveWebAppUrl}
+              gasApiSecret={gasApiSecret}
+              onSaveGasApiSecret={handleSaveGasApiSecret}
               guruName={guruName}
               onSaveGuruName={handleSaveGuruName}
               shuffleQuestions={shuffleQuestions}
@@ -694,6 +916,7 @@ export default function App() {
                 setExamConfig((prev) => ({
                   ...prev,
                   token: '',
+                  isActive: false,
                 }));
               }}
               onClearPackages={() => setPackages([])}
@@ -723,6 +946,10 @@ export default function App() {
                 setExamConfig((prev) => ({
                   ...prev,
                   token: '',
+                  title: '',
+                  subject: '',
+                  grade: '',
+                  totalQuestions: 0,
                   googleFormUrl: '',
                   googleFormEditUrl: '',
                 }));
@@ -739,6 +966,7 @@ export default function App() {
                   subject: INITIAL_PACKAGES[0]?.subject || 'Matematika',
                   grade: INITIAL_PACKAGES[0]?.grade || 'Kelas VII SMP',
                   totalQuestions: INITIAL_PACKAGES[0]?.questions.length || 15,
+                  isActive: true,
                   googleFormUrl: '',
                   googleFormEditUrl: '',
                 }));

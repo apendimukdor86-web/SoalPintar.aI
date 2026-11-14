@@ -151,7 +151,25 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
       if (saved !== null) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed;
+          return parsed
+            .filter((item: any) => item && typeof item === 'object' && String(item.token || '').trim() !== '')
+            .map((item: any) => ({
+              token: String(item.token).trim().toUpperCase(),
+              label: String(item.label || 'ASAS'),
+              quizTitle: String(item.quizTitle || 'Ujian CBT'),
+              subject: String(item.subject || 'Umum'),
+              grade: String(item.grade || 'SMP'),
+              totalQuestions: Math.max(0, Number(item.totalQuestions) || 10),
+              googleFormUrl: String(item.googleFormUrl || ''),
+              googleFormEditUrl: item.googleFormEditUrl ? String(item.googleFormEditUrl) : '',
+              driveFolderUrl: String(item.driveFolderUrl || 'https://drive.google.com'),
+              maxViolations: Math.max(1, Number(item.maxViolations) || 1),
+              expiryDateTime: String(item.expiryDateTime || ''),
+              waitingRoomEnabled: Boolean(item.waitingRoomEnabled),
+              isExamStarted: item.isExamStarted !== false,
+              isActive: item.isActive !== false,
+              createdAt: Number(item.createdAt) || Date.now(),
+            }));
         }
       }
     } catch {
@@ -221,12 +239,15 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
     const fetchActiveCount = async () => {
       try {
         const res = await fetch('/api/rooms');
+        if (!res.ok) return;
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) return;
         const data = await res.json();
         if (data?.success && Array.isArray(data.rooms)) {
           let total = 0;
           for (const r of data.rooms) {
             const parts = r.participants ? Object.values(r.participants) : [];
-            total += parts.filter((p: any) => p.status === 'mengerjakan').length;
+            total += parts.filter((p: any) => p?.status === 'mengerjakan').length;
           }
           setActiveStudentsCount(total);
         }
@@ -258,6 +279,7 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
       maxViolations: entry.maxViolations,
       waitingRoomEnabled: entry.waitingRoomEnabled,
       isExamStarted: entry.isExamStarted,
+      isActive: entry.isActive,
       expiryMode: entry.expiryDateTime ? 'datetime' : 'jp',
       expiryDateTime: entry.expiryDateTime || undefined,
       durationMinutes: currentConfig.durationMinutes || 90,
@@ -349,11 +371,23 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
     }
   };
 
-  const handleToggleActiveStatus = (entry: ManagedTokenEntry) => {
+  const handleToggleActiveStatus = async (entry: ManagedTokenEntry) => {
     const nextActive = !entry.isActive;
     setTokens((prev) =>
       prev.map((t) => (t.token === entry.token ? { ...t, isActive: nextActive } : t))
     );
+    if (currentConfig.token === entry.token) {
+      onUpdateConfig({ ...currentConfig, isActive: nextActive });
+    }
+    try {
+      await fetch(`/api/rooms/${encodeURIComponent(entry.token)}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set_active', isActive: nextActive }),
+      });
+    } catch {
+      // Ignore offline error
+    }
     showToast(
       nextActive
         ? `Token "${entry.token}" diaktifkan kembali.`
@@ -581,8 +615,11 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
               type="number"
               min={1}
               max={20}
-              value={maxViolationsInput}
-              onChange={(e) => setMaxViolationsInput(Number(e.target.value))}
+              value={Number.isFinite(maxViolationsInput) ? maxViolationsInput : 1}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setMaxViolationsInput(Number.isFinite(n) && n >= 1 ? Math.min(20, Math.floor(n)) : 1);
+              }}
               className="w-full text-xs bg-[#0e172a] border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
             />
           </div>
@@ -998,8 +1035,11 @@ export const TokenManagerView: React.FC<TokenManagerViewProps> = ({
                 type="number"
                 min={1}
                 max={20}
-                value={editLimit}
-                onChange={(e) => setEditLimit(Number(e.target.value))}
+                value={Number.isFinite(editLimit) ? editLimit : 1}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  setEditLimit(Number.isFinite(n) && n >= 1 ? Math.min(20, Math.floor(n)) : 1);
+                }}
                 className="w-full text-xs bg-[#0e172a] border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
               />
             </div>

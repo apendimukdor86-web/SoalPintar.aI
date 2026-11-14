@@ -144,7 +144,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label: 'Setting Web App (Code.gs)',
           number: 'GS',
           icon: FileCode,
-          badge: 'v3.3',
+          badge: 'v3.5.2',
         },
         {
           id: 'clear_data',

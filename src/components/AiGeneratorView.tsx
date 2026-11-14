@@ -22,6 +22,10 @@ interface AiGeneratorViewProps {
   onSaveToBank: (pkg: QuestionPackage) => void;
   onOpenDistribusi: (pkg: QuestionPackage) => void;
   webAppUrl?: string;
+  gasApiSecret?: string;
+  guruName?: string;
+  shuffleQuestions?: boolean;
+  shuffleOptions?: boolean;
   onOpenGasSettings?: () => void;
 }
 
@@ -29,6 +33,10 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
   onSaveToBank,
   onOpenDistribusi,
   webAppUrl = '',
+  gasApiSecret = '',
+  guruName = 'Guru',
+  shuffleQuestions = true,
+  shuffleOptions = false,
   onOpenGasSettings,
 }) => {
   // Preset default matches user screenshot (Tabung · SMP, 10 soal)
@@ -216,10 +224,19 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
           questions: generatedPackage.questions,
         }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = text && !text.trim().startsWith('<') ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
+      if (res.ok && data?.success) {
         setGasScript(data.script);
         setShowGasModal(true);
+      } else {
+        setToastMsg(data?.message || `Gagal membuat script (HTTP ${res.status}).`);
+        setTimeout(() => setToastMsg(null), 3500);
       }
     } catch (err) {
       console.error(err);
@@ -241,7 +258,7 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
     setIsSendingToDrive(true);
     setDirectFormResult(null);
 
-    const formattedQuestions = generatedPackage.questions.map((q, idx) => {
+    const formattedQuestions = (generatedPackage.questions || []).map((q, idx) => {
       const optionsArray = (q.options || []).map((o) => `${o.key}. ${o.text}`);
       let correctIndex = (q.options || []).findIndex((o) => o.key === q.correctAnswer);
       if (correctIndex === -1) correctIndex = 0;
@@ -261,18 +278,25 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           webAppUrl,
+          apiSecret: gasApiSecret || undefined,
           title: generatedPackage.title,
           quiz_id: 'soal-' + Date.now().toString().slice(-6),
-          guru_name: 'Guru',
+          guru_name: guruName || 'Guru',
           folder_name: generatedPackage.subject,
           questions: formattedQuestions,
-          shuffle_questions: true,
-          shuffle_options: false,
+          shuffle_questions: shuffleQuestions,
+          shuffle_options: shuffleOptions,
         }),
       });
 
-      const data = await res.json();
-      if (data.success && data.form_url) {
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = text && !text.trim().startsWith('<') ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
+      if (res.ok && data?.success && data.form_url) {
         setDirectFormResult({
           form_url: data.form_url,
           edit_url: data.edit_url,
@@ -281,7 +305,7 @@ export const AiGeneratorView: React.FC<AiGeneratorViewProps> = ({
         setToastMsg('Google Form berhasil dibuat di Google Drive Anda!');
         setTimeout(() => setToastMsg(null), 3500);
       } else {
-        setToastMsg('Gagal membuat Google Form via Web App: ' + (data.message || 'Error'));
+        setToastMsg('Gagal membuat Google Form via Web App: ' + (data?.message || `HTTP ${res.status}`));
         setTimeout(() => setToastMsg(null), 4000);
       }
     } catch (e: any) {

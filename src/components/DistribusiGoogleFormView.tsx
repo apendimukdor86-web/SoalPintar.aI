@@ -33,8 +33,8 @@ export const DistribusiGoogleFormView: React.FC<DistribusiGoogleFormViewProps> =
   };
 
   const handleExtendTime = async (mins: number) => {
-    const newRemaining = config.remainingSeconds + mins * 60;
-    const newDuration = config.durationMinutes + mins;
+    const newRemaining = Math.max(0, (config.remainingSeconds || 0) + mins * 60);
+    const newDuration = Math.max(0, (config.durationMinutes || 0) + mins);
     const updated = {
       ...config,
       remainingSeconds: newRemaining,
@@ -42,8 +42,11 @@ export const DistribusiGoogleFormView: React.FC<DistribusiGoogleFormViewProps> =
     };
     onUpdateConfig(updated);
 
+    const cleanToken = String(config.token || '').trim().toUpperCase();
+    if (!cleanToken) return;
+
     try {
-      await fetch(`/api/rooms/${config.token}/actions`, {
+      await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -63,8 +66,11 @@ export const DistribusiGoogleFormView: React.FC<DistribusiGoogleFormViewProps> =
     };
     onUpdateConfig(updated);
 
+    const cleanToken = String(config.token || '').trim().toUpperCase();
+    if (!cleanToken) return;
+
     try {
-      await fetch(`/api/rooms/${config.token}/actions`, {
+      await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -88,11 +94,17 @@ export const DistribusiGoogleFormView: React.FC<DistribusiGoogleFormViewProps> =
     onUpdateConfig(updated);
 
     try {
-      await fetch('/api/rooms', {
+      const res = await fetch('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated),
       });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.success && data.room?.token && !updated.token) {
+          onUpdateConfig({ ...updated, token: data.room.token });
+        }
+      }
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
     } catch (err) {

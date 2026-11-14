@@ -90,11 +90,14 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   const fetchAllRooms = async () => {
     try {
       const res = await fetch('/api/rooms');
+      if (!res.ok) return;
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) return;
       const data = await res.json();
-      if (data.success && Array.isArray(data.rooms)) {
+      if (data?.success && Array.isArray(data.rooms)) {
         const mapped: LiveRoomData[] = data.rooms.map((r: any) => {
           const parts = r.participants ? Object.values(r.participants) : [];
-          const active = parts.filter((p: any) => p.status === 'mengerjakan').length;
+          const active = parts.filter((p: any) => p?.status === 'mengerjakan').length;
           return {
             ...r,
             activeCount: active,
@@ -132,17 +135,21 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
 
   // Fetch specific room data when in detail monitoring mode
   const fetchActiveRoomDetail = async (token: string) => {
+    const cleanToken = String(token || '').trim();
+    if (!cleanToken) return;
     try {
-      const res = await fetch(`/api/rooms/${token}`);
+      const res = await fetch(`/api/rooms/${encodeURIComponent(cleanToken)}`);
       if (!res.ok) {
         setParticipants([]);
         setSelectedRoomToken(null);
         return;
       }
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) return;
       const data = await res.json();
-      if (data.success && data.room) {
+      if (data?.success && data.room) {
         setParticipants(Object.values(data.room.participants || {}));
-        setRemainingSec(data.room.remainingSeconds || 0);
+        setRemainingSec(Math.max(0, Number(data.room.remainingSeconds) || 0));
       } else {
         setParticipants([]);
         setSelectedRoomToken(null);
@@ -271,11 +278,12 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   const countDone = participants.filter((p) => p.status === 'selesai').length;
 
   const filtered = participants.filter((p) => {
+    const q = searchQuery.toLowerCase();
     const matchesQuery =
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.nisn.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.kelas.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesFilter = filterStatus === 'all' || p.status === filterStatus;
+      String(p?.name || '').toLowerCase().includes(q) ||
+      String(p?.nisn || '').toLowerCase().includes(q) ||
+      String(p?.kelas || '').toLowerCase().includes(q);
+    const matchesFilter = filterStatus === 'all' || p?.status === filterStatus;
     return matchesQuery && matchesFilter;
   });
 

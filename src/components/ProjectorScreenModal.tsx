@@ -11,20 +11,33 @@ interface ProjectorScreenModalProps {
 export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ config, onClose }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [participantCount, setParticipantCount] = useState<number>(5);
+  const [participantCount, setParticipantCount] = useState<number>(0);
 
-  const studentUrl = `${window.location.origin}/?mode=student&token=${config.token}`;
+  const hasToken = Boolean(config.token && config.token.trim());
+  const studentUrl = hasToken
+    ? `${window.location.origin}/?mode=student&token=${config.token}`
+    : `${window.location.origin}/?mode=student`;
 
   useEffect(() => {
+    if (!hasToken) {
+      setQrDataUrl('');
+      setParticipantCount(0);
+      return;
+    }
+
     generateQrCodeDataUrl(studentUrl).then(setQrDataUrl);
 
     // Fetch live participant count
     const fetchCount = async () => {
       try {
-        const res = await fetch(`/api/rooms/${config.token}`);
+        const res = await fetch(`/api/rooms/${encodeURIComponent(config.token)}`);
+        if (!res.ok) {
+          setParticipantCount(0);
+          return;
+        }
         const data = await res.json();
         if (data.success && data.room) {
-          setParticipantCount(Object.keys(data.room.participants).length);
+          setParticipantCount(Object.keys(data.room.participants || {}).length);
         }
       } catch (e) {
         console.error(e);
@@ -34,7 +47,7 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
     fetchCount();
     const interval = setInterval(fetchCount, 4000);
     return () => clearInterval(interval);
-  }, [studentUrl, config.token]);
+  }, [studentUrl, config.token, hasToken]);
 
   const toggleBrowserFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -45,9 +58,10 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
   };
 
   const formatSeconds = (sec: number) => {
-    const hours = Math.floor(sec / 3600);
-    const minutes = Math.floor((sec % 3600) / 60);
-    const seconds = sec % 60;
+    const safeSec = Math.max(0, Math.floor(Number(sec) || 0));
+    const hours = Math.floor(safeSec / 3600);
+    const minutes = Math.floor((safeSec % 3600) / 60);
+    const seconds = safeSec % 60;
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
@@ -61,8 +75,8 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
           </div>
           <div>
             <div className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
-              <span>{config.title}</span>
-              <span className="text-slate-400 font-normal">· {config.grade}</span>
+              <span>{config.title || 'Ujian CBT'}</span>
+              <span className="text-slate-400 font-normal">· {config.grade || 'Umum'}</span>
             </div>
             <div className="text-xs text-slate-400">
               Layar Proyektor Resmi Soalpintar.ai CBT
@@ -106,7 +120,11 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
         {/* Left: Giant QR Code Card */}
         <div className="lg:col-span-6 flex flex-col items-center justify-center text-center space-y-4">
           <div className="p-5 bg-white rounded-3xl shadow-2xl border-4 border-slate-800 inline-block">
-            {qrDataUrl ? (
+            {!hasToken ? (
+              <div className="w-72 h-72 bg-slate-100 flex items-center justify-center text-slate-600 text-xs font-medium px-6 text-center">
+                Belum ada token ujian aktif. Buat token di menu Token Siswa terlebih dahulu.
+              </div>
+            ) : qrDataUrl ? (
               <img src={qrDataUrl} alt="QR Code Ujian Kelas" className="w-72 h-72 md:w-84 md:h-84 object-contain" />
             ) : (
               <div className="w-72 h-72 bg-slate-100 flex items-center justify-center text-slate-400 text-xs">
@@ -115,7 +133,7 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
             )}
           </div>
           <p className="text-sm text-slate-400 font-medium tracking-wide">
-            Arahkan kamera smartphone ke QR Code di atas
+            {hasToken ? 'Arahkan kamera smartphone ke QR Code di atas' : 'QR Code akan muncul otomatis setelah token dibuat'}
           </p>
         </div>
 
@@ -126,7 +144,7 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
               KODE TOKEN UJIAN KELAS
             </div>
             <div className="text-6xl md:text-7xl font-extrabold font-mono tracking-widest text-white bg-slate-900/90 py-5 px-8 rounded-2xl border-2 border-emerald-500/40 inline-block shadow-2xl">
-              {config.token}
+              {hasToken ? config.token : '—'}
             </div>
             <p className="text-xs text-slate-400 pt-1">
               Atau ketik manual di browser:{' '}
@@ -146,7 +164,7 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
                 <strong className="text-white">Pindai QR Code</strong> atau buka tautan di browser perangkat Anda.
               </li>
               <li>
-                Masukkan <strong className="text-white">Nama Lengkap</strong>, <strong className="text-white">NISN</strong>, dan Token <strong className="font-mono text-emerald-400">{config.token}</strong>.
+                Masukkan <strong className="text-white">Nama Lengkap</strong>, <strong className="text-white">NISN</strong>, dan Token <strong className="font-mono text-emerald-400">{hasToken ? config.token : '-'}</strong>.
               </li>
               <li>
                 Klik tombol <strong className="text-emerald-400">"Mulai Ujian Aman"</strong> untuk masuk ke mode fullscreen otomatis.
@@ -162,7 +180,7 @@ export const ProjectorScreenModal: React.FC<ProjectorScreenModalProps> = ({ conf
       {/* Footer Info */}
       <div className="border-t border-slate-800 pt-3 flex items-center justify-between text-xs text-slate-500">
         <div>Soalpintar.ai Secure Exam · Google Forms & CBT Proyektor Edition</div>
-        <div>Toleransi Pelanggaran: {config.maxViolations}x Kesempatan</div>
+        <div>Toleransi Pelanggaran: {config.maxViolations ?? 3}x Kesempatan</div>
       </div>
     </div>
   );

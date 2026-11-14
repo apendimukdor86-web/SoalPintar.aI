@@ -47,6 +47,7 @@ export interface ExamTokenConfig {
   maxViolations: number;
   waitingRoomEnabled: boolean;
   isExamStarted: boolean;
+  isActive?: boolean;
   googleFormUrl: string;
   googleFormEditUrl?: string;
   driveFolderUrl?: string;

@@ -13,10 +13,11 @@ export const RiwayatPelanggaranView: React.FC<RiwayatPelanggaranViewProps> = ({ 
   const types = ['Semua', 'Pindah Tab', 'Keluar Fullscreen', 'Split Screen / Resize', 'Aplikasi Mengambang'];
 
   const filtered = violations.filter((v) => {
+    const q = searchQuery.toLowerCase();
     const matchSearch =
-      v.studentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      v.nisn.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      v.kelas.toLowerCase().includes(searchQuery.toLowerCase());
+      String(v.studentName || '').toLowerCase().includes(q) ||
+      String(v.nisn || '').toLowerCase().includes(q) ||
+      String(v.kelas || '').toLowerCase().includes(q);
     const matchType = typeFilter === 'Semua' || v.type === typeFilter;
     return matchSearch && matchType;
   });
@@ -29,10 +30,11 @@ Total Pelanggaran Terdeteksi: ${violations.length} Kejadian
 
 DAFTAR BUKTI PELANGGARAN:
 ${violations
-  .map(
-    (v, i) =>
-      `${i + 1}. [${new Date(v.timestamp).toLocaleTimeString('id-ID')}] ${v.studentName} (${v.nisn} - ${v.kelas}) - Jenis: ${v.type} - Sanksi: Penalti ${v.penaltySeconds} Detik`
-  )
+  .map((v, i) => {
+    const dt = new Date(Number(v.timestamp) || Date.now());
+    const tStr = isNaN(dt.getTime()) ? '-' : dt.toLocaleTimeString('id-ID');
+    return `${i + 1}. [${tStr}] ${v.studentName || 'Siswa'} (${v.nisn || '-'} - ${v.kelas || '-'}) - Jenis: ${v.type} - Sanksi: Penalti ${v.penaltySeconds || 10} Detik`;
+  })
   .join('\n')}
 
 Mengetahui,
@@ -121,15 +123,17 @@ Pengawas Ujian Kelas / Guru Mata Pelajaran
                 </tr>
               ) : (
                 filtered.map((log) => {
-                  const date = new Date(log.timestamp);
-                  const timeStr = date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                  const date = new Date(Number(log.timestamp) || Date.now());
+                  const timeStr = isNaN(date.getTime())
+                    ? '-'
+                    : date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                   return (
                     <tr
                       key={log.id}
                       className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
                     >
                       <td className="py-3 px-4 font-mono text-slate-500">
-                        {timeStr} WIB
+                        {timeStr === '-' ? '-' : `${timeStr} WIB`}
                       </td>
                       <td className="py-3 px-4">
                         <div className="font-semibold text-slate-900 dark:text-slate-100">
